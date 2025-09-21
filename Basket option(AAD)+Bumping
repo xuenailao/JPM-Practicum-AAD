@@ -1,0 +1,356 @@
+import numpy as np
+import time
+from datetime import datetime
+
+# ------------------ Operator Overloading AAD Implementation ------------------
+class Var:
+    """
+    Var class: Basic variable node for Automatic Adjoint Differentiation (AAD).
+    - val: stores the numerical value
+    - grad: stores the gradient (populated after backpropagation)
+    - _prev: stores parent nodes (dependencies in computation graph)
+    - _grad_fn: local gradient function
+    - name: optional variable name (useful for debugging)
+    """
+    def __init__(self, val, name=None):
+        self.val = float(val)
+        self.grad = 0.0
+        self._prev = []
+        self._grad_fn = None
+        self.name = name
+
+    # ------------------ Addition ------------------
+    def __add__(self, other):
+        other = other if isinstance(other, Var) else Var(other)
+        out = Var(self.val + other.val)
+        def grad_fn():
+            self.grad += out.grad
+            other.grad += out.grad
+        out._prev = [self, other]
+        out._grad_fn = grad_fn
+        return out
+
+    def __radd__(self, other): return self + other
+    def __sub__(self, other): return self + (-other)
+    def __rsub__(self, other): return Var(other) - self
+
+    # ------------------ Multiplication ------------------
+    def __mul__(self, other):
+        other = other if isinstance(other, Var) else Var(other)
+        out = Var(self.val * other.val)
+        def grad_fn():
+            self.grad += other.val * out.grad
+            other.grad += self.val * out.grad
+        out._prev = [self, other]
+        out._grad_fn = grad_fn
+        return out
+
+    def __rmul__(self, other): return self * other
+
+    # ------------------ Division ------------------
+    def __truediv__(self, other):
+        other = other if isinstance(other, Var) else Var(other)
+        out = Var(self.val / other.val)
+        def grad_fn():
+            self.grad += (1 / other.val) * out.grad
+            other.grad -= (self.val / (other.val**2)) * out.grad
+        out._prev = [self, other]
+        out._grad_fn = grad_fn
+        return out
+
+    # ------------------ Negation ------------------
+    def __neg__(self):
+        out = Var(-self.val)
+        def grad_fn():
+            self.grad -= out.grad
+        out._prev = [self]
+        out._grad_fn = grad_fn
+        return out
+
+    # ------------------ Exponential ------------------
+    def exp(self):
+        out = Var(np.exp(self.val))
+        def grad_fn():
+            self.grad += out.val * out.grad
+        out._prev = [self]
+        out._grad_fn = grad_fn
+        return out
+
+    # ------------------ Backpropagation ------------------
+    def backward(self):
+        # Build topological order of the computation graph
+        topo, visited = [], set()
+        def build(v):
+            if v not in visited:
+                visited.add(v)
+                for child in v._prev:
+                    build(child)
+                topo.append(v)
+        build(self)
+
+        # Initialize gradient of the output node
+        self.grad = 1.0
+        # Propagate gradients in reverse topological order
+        for v in reversed(topo):
+            if v._grad_fn: 
+                v._grad_fn()
+
+
+# ------------------ ReLU Function ------------------
+def relu(x: Var):
+    """
+    ReLU function (max(x, 0)) that maintains the computation graph.
+    """
+    out = Var(x.val if x.val > 0 else 0.0)
+    def grad_fn():
+        if x.val > 0:
+            x.grad += out.grad
+    out._prev = [x]
+    out._grad_fn = grad_fn
+    return out
+
+
+# ------------------ Basket Option Pricing with AAD ------------------
+def basket_call_pathwise_aad_all_greeks(S0, K, r0, sigma, T, weights, corr_matrix,
+                                        Z_paths, n_steps=100):
+    """
+    Monte Carlo simulation with Pathwise method + AAD
+    to compute Basket European Call option price and Greeks.
+
+    Parameters:
+        S0: initial asset prices
+        K: strike price
+        r0: risk-free rate
+        sigma: volatility vector
+        T: maturity
+        weights: basket weights
+        corr_matrix: correlation matrix
+        Z_paths: pre-generated standard normal samples
+        n_steps: number of time steps
+    
+    Returns:
+        price: option price
+        delta: sensitivity wrt. initial asset prices
+        vega: sensitivity wrt. volatilities
+        rho: sensitivity wrt. interest rate
+    """
+
+    # Convert inputs to numpy arrays
+    S0 = np.array(S0, dtype=float)
+    sigma = np.array(sigma, dtype=float)
+    weights = np.array(weights, dtype=float)
+    n_assets = len(S0)
+    dt = T / n_steps
+
+    # ------------------ Cholesky decomposition ------------------
+    epsilon = 1e-12
+    R = np.array(corr_matrix, dtype=float) + epsilon * np.eye(n_assets)
+    L = np.linalg.cholesky(R)
+
+    # ------------------ Monte Carlo loop ------------------
+    n_paths = Z_paths.shape[0]
+    price_paths, deltas_per_path, vegas_per_path, rhos_per_path = [], [], [], []
+
+    for path_idx in range(n_paths):
+        # Wrap parameters as Var nodes
+        S0_var = [Var(s, f"S{i}") for i, s in enumerate(S0)]
+        sigma_var = [Var(sg, f"sigma{i}") for i, sg in enumerate(sigma)]
+        r_var = Var(r0, "r")
+        logS = [Var(0.0, f"logS{i}") for i in range(n_assets)]
+
+        # ------------------ Simulate GBM log-prices ------------------
+        for step in range(n_steps):
+            Z = Z_paths[path_idx, step, :]
+            dW = L @ Z * np.sqrt(dt)   # correlated increments
+            for i in range(n_assets):
+                drift = (r_var - 0.5 * sigma_var[i] * sigma_var[i]) * dt
+                diff  = sigma_var[i] * Var(dW[i])
+                logS[i] = logS[i] + drift + diff
+
+        # ------------------ Terminal asset prices ------------------
+        S_T = [S0_var[i] * logS[i].exp() for i in range(n_assets)]
+
+        # ------------------ Basket value ------------------
+        basket_val = Var(0.0)
+        for i in range(n_assets):
+            basket_val = basket_val + (weights[i] * S_T[i])
+
+        # ------------------ Discounted payoff ------------------
+        payoff = relu(basket_val - K)
+        discount = (-r_var * Var(T)).exp()
+        price_var = payoff * discount
+
+        # ------------------ Backpropagation ------------------
+        price_var.backward()
+
+        # Collect results for this path
+        price_paths.append(price_var.val)
+        deltas_per_path.append([sv.grad for sv in S0_var])
+        vegas_per_path.append([sg.grad for sg in sigma_var])
+        rhos_per_path.append(r_var.grad)
+
+    # Monte Carlo averages
+    return (np.mean(price_paths),
+            np.mean(deltas_per_path, axis=0),
+            np.mean(vegas_per_path, axis=0),
+            np.mean(rhos_per_path))
+
+
+# ------------------ Main Function ------------------
+if __name__ == "__main__":
+    K, r0, T = 100, 0.05, 1.0         # strike, interest rate, maturity
+    rho = 0.3                         # correlation coefficient
+    n_paths, n_steps = 100, 100       # number of MC paths and steps
+    rng = np.random.default_rng(12345)
+
+    # Loop over different numbers of assets
+    for n_assets in range(15, 21, 5):
+        start_time = time.time()
+        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        print(f"\n[{now}] Running with n_assets = {n_assets}")
+
+        # Initialize parameters
+        S0 = np.linspace(90, 110, n_assets)                # linearly spaced initial prices
+        sigma = np.linspace(0.15, 0.30, n_assets)          # linearly spaced volatilities
+        weights = np.ones(n_assets) / n_assets             # equal basket weights
+        corr_matrix = rho * np.ones((n_assets, n_assets)) + (1 - rho) * np.eye(n_assets)  
+        Z_paths = rng.standard_normal(size=(n_paths, n_steps, n_assets))  
+
+        # Run AAD + Pathwise Monte Carlo
+        price, delta, vega, rho_out = basket_call_pathwise_aad_all_greeks(
+            S0, K, r0, sigma, T, weights, corr_matrix, Z_paths, n_steps
+        )
+
+        # Print results
+        elapsed = time.time() - start_time
+        print("  Price:", price)
+        print("  Delta:", delta)
+        print("  Vega:", vega)
+        print("  Rho:", rho_out)
+        print(f"  Time elapsed: {elapsed:.2f} seconds")
+
+# ------------------ Bumping Pricing ------------------
+def basket_call_price_mc(S0, K, r, sigma, T, weights, corr_matrix,
+                         Z_paths, n_steps=100):
+    """
+    Classical Monte Carlo pricing of a basket European call option.
+
+    Parameters:
+        S0: initial asset prices (array)
+        K: strike price
+        r: risk-free rate
+        sigma: volatilities (array)
+        T: maturity
+        weights: basket weights
+        corr_matrix: correlation matrix
+        Z_paths: pre-generated standard normal random numbers
+        n_steps: number of time steps
+
+    Returns:
+        Monte Carlo estimate of the option price
+    """
+    # Convert inputs to numpy arrays for vectorization
+    S0 = np.array(S0, dtype=float)
+    sigma = np.array(sigma, dtype=float)
+    weights = np.array(weights, dtype=float)
+    n_assets = len(S0)
+    dt = T / n_steps   # time step length
+
+    # ------------------ Cholesky Decomposition (introducing correlation) ------------------
+    epsilon = 1e-12   # small perturbation to ensure matrix is non-singular
+    R = np.array(corr_matrix, dtype=float) + epsilon * np.eye(n_assets)
+    L = np.linalg.cholesky(R)   # lower triangular matrix, R = L Lᵀ
+
+    price_paths, n_paths = [], Z_paths.shape[0]
+
+    # ------------------ Simulate each path ------------------
+    for path_idx in range(n_paths):
+        S = S0.copy()   # initialize asset prices for this path
+        for step in range(n_steps):
+            Z = Z_paths[path_idx, step, :]   # normal draws for this step
+            dW = L @ Z * np.sqrt(dt)         # correlated Brownian increments
+            # Update asset prices with GBM dynamics
+            S = S * np.exp((r - 0.5 * sigma**2) * dt + sigma * dW)
+
+        # Compute basket option payoff
+        basket_val = np.dot(weights, S)       # weighted sum of terminal prices
+        payoff = max(basket_val - K, 0)       # European call payoff
+        price_paths.append(payoff * np.exp(-r * T))  # discounted payoff
+
+    return np.mean(price_paths)   # Monte Carlo estimate of option price
+
+
+# ------------------ Finite Difference Greeks ------------------
+def finite_diff_greeks(S0, K, r, sigma, T, weights, corr_matrix,
+                       Z_paths, eps=1e-3, n_steps=100):
+    """
+    Compute Greeks (Delta, Vega, Rho) using finite difference method.
+
+    Parameters:
+        eps: perturbation size for finite difference approximation
+    """
+    n_assets = len(S0)
+    delta_fd = np.zeros(n_assets)  # Delta per asset
+    vega_fd = np.zeros(n_assets)   # Vega per asset
+
+    # ------------------ Base price ------------------
+    price = basket_call_price_mc(S0, K, r, sigma, T, weights, corr_matrix, Z_paths, n_steps)
+
+    # ------------------ Delta ------------------
+    for i in range(n_assets):
+        S_up, S_down = S0.copy(), S0.copy()
+        S_up[i] += eps       # perturb upward
+        S_down[i] -= eps     # perturb downward
+        p_up = basket_call_price_mc(S_up, K, r, sigma, T, weights, corr_matrix, Z_paths, n_steps)
+        p_down = basket_call_price_mc(S_down, K, r, sigma, T, weights, corr_matrix, Z_paths, n_steps)
+        delta_fd[i] = (p_up - p_down) / (2 * eps)   # central difference
+
+    # ------------------ Vega ------------------
+    for i in range(n_assets):
+        sigma_up, sigma_down = sigma.copy(), sigma.copy()
+        sigma_up[i] += eps
+        sigma_down[i] -= eps
+        p_up = basket_call_price_mc(S0, K, r, sigma_up, T, weights, corr_matrix, Z_paths, n_steps)
+        p_down = basket_call_price_mc(S0, K, r, sigma_down, T, weights, corr_matrix, Z_paths, n_steps)
+        vega_fd[i] = (p_up - p_down) / (2 * eps)   # central difference
+
+    # ------------------ Rho ------------------
+    p_up = basket_call_price_mc(S0, K, r + eps, sigma, T, weights, corr_matrix, Z_paths, n_steps)
+    p_down = basket_call_price_mc(S0, K, r - eps, sigma, T, weights, corr_matrix, Z_paths, n_steps)
+    rho_fd = (p_up - p_down) / (2 * eps)
+
+    return price, delta_fd, vega_fd, rho_fd
+
+
+# ------------------ Main ------------------
+if __name__ == "__main__":
+    K, r0, T = 100, 0.05, 1.0   # strike, interest rate, maturity
+    rho = 0.3                   # correlation between assets
+    n_paths, n_steps = 100, 100 # number of paths and time steps
+    rng = np.random.default_rng(12345)  # RNG
+
+    # ------------------ Test for different basket sizes ------------------
+    for n_assets in range(15, 21, 5):
+        start_time = time.time()
+        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        print(f"\n[{now}] Running with n_assets = {n_assets}")
+
+        # Set initial prices and volatilities (linearly spaced)
+        S0 = np.linspace(90, 110, n_assets)
+        sigma = np.linspace(0.15, 0.30, n_assets)
+        weights = np.ones(n_assets) / n_assets   # equal weights
+        corr_matrix = rho * np.ones((n_assets, n_assets)) + (1 - rho) * np.eye(n_assets) # correlation matrix
+        Z_paths = rng.standard_normal(size=(n_paths, n_steps, n_assets))  # standard normals
+
+        # Compute Greeks via finite difference
+        price, delta, vega, rho_out = finite_diff_greeks(
+            S0, K, r0, sigma, T, weights, corr_matrix, Z_paths, eps=1e-3, n_steps=n_steps
+        )
+
+        elapsed = time.time() - start_time
+        print("  Price:", price)
+        print("  Delta:", delta)
+        print("  Vega:", vega)
+        print("  Rho:", rho_out)
+        print(f"  Time elapsed: {elapsed:.2f} seconds")
+
