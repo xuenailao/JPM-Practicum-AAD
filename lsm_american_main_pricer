@@ -10,44 +10,8 @@ from __future__ import annotations
 import numpy as np
 from dataclasses import dataclass
 from typing import Optional, Tuple, Callable
-import math
-import time
 
 Array = np.ndarray
-
-# =========================
-# Hand-written 3x3 solver
-# =========================
-def _solve_3x3(A: List[List[float]], b: List[float], ridge: float = 1e-10) -> List[float]:
-    """Solve (A + ridge*I) x = b for 3x3 A via Gaussian elimination (partial pivot)."""
-    M = [row[:] for row in A]
-    for i in range(3):
-        M[i][i] += ridge
-    M = [M[0] + [b[0]], M[1] + [b[1]], M[2] + [b[2]]]
-    for col in range(3):
-        piv = col
-        maxabs = abs(M[col][col])
-        for r in range(col + 1, 3):
-            if abs(M[r][col]) > maxabs:
-                maxabs = abs(M[r][col]); piv = r
-        if maxabs < 1e-18:
-            return [0.0, 0.0, 0.0]
-        if piv != col:
-            M[col], M[piv] = M[piv], M[col]
-        fac = M[col][col]
-        for c in range(col, 4):
-            M[col][c] /= fac
-        for r in range(col + 1, 3):
-            fac = M[r][col]
-            for c in range(col, 4):
-                M[r][c] -= fac * M[col][c]
-    x = [0.0, 0.0, 0.0]
-    for i in (2, 1, 0):
-        s = M[i][3]
-        for c in range(i + 1, 3):
-            s -= M[i][c] * x[c]
-        x[i] = s
-    return x
 
 @dataclass
 class AMCPaths:
@@ -194,48 +158,6 @@ def _ols_beta(X: Array, y: Array) -> Array:
     return beta
 # ------------------------------------------------------------
 
-# 3*3 Solver case-----------------------------------------------------
-def _ols_beta_poly2_fast(S_itm: Array, y: Array) -> List[float]:
-    """
-    Solve min ||Xβ - y|| with X=[1, S, S^2] via normal equations:
-      XtX = [[Σ1, ΣS, ΣS2],
-             [ΣS, ΣS2, ΣS3],
-             [ΣS2,ΣS3, ΣS4]],
-      Xty = [Σy, Σ(Sy), Σ(S^2 y)]
-    """
-    S_itm = np.asarray(S_itm, dtype=float)
-    y     = np.asarray(y, dtype=float)
-    n  = S_itm.size
-    if n == 0:
-        return [np.nan, np.nan, np.nan]
-
-    S   = S_itm
-    S2  = S * S
-    S3  = S2 * S
-    S4  = S2 * S2
-
-    s1  = float(n)
-    sS  = float(np.sum(S))
-    s2  = float(np.sum(S2))
-    s3  = float(np.sum(S3))
-    s4  = float(np.sum(S4))
-
-    sy  = float(np.sum(y))
-    sSy = float(np.sum(S * y))
-    s2y = float(np.sum(S2 * y))
-
-    XtX = [[s1, sS, s2],
-           [sS, s2, s3],
-           [s2, s3, s4]]
-    Xty = [sy, sSy, s2y]
-    return _solve_3x3(XtX, Xty, ridge=1e-10)
-
-def _yhat_poly2(beta: List[float], S_itm: Array) -> Array:
-    b0, b1, b2 = beta
-    S = np.asarray(S_itm, dtype=float)
-    return b0 + b1*S + b2*(S*S)
-# -------------------------------------------------------------
-
 @dataclass
 class LSMResult:
     price: float          # Option price estimate
@@ -258,7 +180,6 @@ def _lsm_single_pack(
     S, dt, disc = pack.S, pack.dt, pack.disc
     P, M1 = S.shape
     M = M1 - 1
-    start = time.perf_counter()
 
     C = payoff_now(S[:, M], K).astype(S.dtype, copy=False)
 
@@ -314,8 +235,6 @@ def _lsm_single_pack(
     r2_arr  = np.array(r2_list[::-1])
     itm_arr = np.array(itm_list[::-1])
     betas.reverse()
-    end = time.perf_counter()
-    print(f"运行时间: {end - start:.6f} 秒")
 
     return LSMResult(
         price=price, stderr=stderr, C_path=C0,
@@ -354,96 +273,6 @@ def lsm_price(
         r2=r2, itm_counts=itm_counts, betas=[res_pos.betas, res_neg.betas]
     )
 # --------------------------------------------------------------------
-
-# 3*3 Solver case-----------------------------------------------------
-def _lsm_single_pack(
-    pack: AMCPaths, K: float,
-    payoff_now: Callable[[Array, float], Array],
-    basis_fn: Callable[[Array], Array] = basis_poly2,   
-) -> LSMResult:
-    start = time.perf_counter()
-    S, disc = pack.S, pack.disc
-    P, M1 = S.shape
-    M = M1 - 1
-
-    C = payoff_now(S[:, M], K).astype(S.dtype, copy=False)
-    r2_list, itm_list, betas = [], [], []
-    tau_idx = np.zeros(P, dtype=np.int32)
-    exercised = np.zeros(P, dtype=bool)
-
-    for m in range(M - 1, 0, -1):
-        Sm = S[:, m]
-        E  = payoff_now(Sm, K)
-        itm = (E > 0.0)
-        itm_list.append(int(itm.sum()))
-
-        if np.any(itm):
-            S_itm = Sm[itm]
-            y     = disc * C[itm]
-            beta  = _ols_beta_poly2_fast(S_itm, y)      
-            betas.append(np.array(beta, dtype=S.dtype)) 
-            y_hat = _yhat_poly2(beta, S_itm)
-
-            # R^2
-            mu = float(np.mean(y)) if y.size > 0 else float('nan')
-            ss_res = float(np.sum((y - y_hat)**2)) if y.size > 0 else float('nan')
-            ss_tot = float(np.sum((y - mu)**2)) if y.size > 1 else float('nan')
-            r2 = 1.0 - ss_res / ss_tot if (np.isfinite(ss_tot) and ss_tot > 0) else np.nan
-            r2_list.append(r2)
-
-            C_hat = np.zeros(P, dtype=S.dtype)
-            C_hat[itm] = y_hat
-        else:
-            betas.append(np.array([np.nan, np.nan, np.nan], dtype=S.dtype))
-            r2_list.append(np.nan)
-            C_hat = np.zeros(P, dtype=S.dtype)
-
-        exer = (E > 0.0) & (E >= C_hat)
-        cont = ~exer
-
-        new_ex = exer & (~exercised)
-        tau_idx[new_ex] = m
-        exercised[new_ex] = True
-
-        C[exer] = E[exer]
-        C[cont] = disc * C[cont]
-
-    C0 = C
-    price  = float(C0.mean())
-    stderr = float(C0.std(ddof=1) / np.sqrt(P))
-
-    r2_arr  = np.array(r2_list[::-1])
-    itm_arr = np.array(itm_list[::-1])
-    betas.reverse()
-    end = time.perf_counter()
-    print(f"运行时间: {end - start:.6f} 秒")
-
-    return LSMResult(price=price, stderr=stderr, C_path=C0,
-                     exercised=exercised, tau_idx=tau_idx,
-                     r2=r2_arr, itm_counts=itm_arr, betas=betas)
-
-def lsm_price(
-    pack: AMCPaths, K: float,
-    payoff_now: Callable[[Array, float], Array],
-    basis_fn: Callable[[Array], Array] = basis_poly2,   
-    *, twin_pack: Optional[AMCPaths] = None,
-) -> LSMResult:
-    res_pos = _lsm_single_pack(pack, K, payoff_now, basis_fn)
-    if twin_pack is None:
-        return res_pos
-    res_neg = _lsm_single_pack(twin_pack, K, payoff_now, basis_fn)
-
-    C_avg = 0.5 * (res_pos.C_path + res_neg.C_path)
-    P = C_avg.shape[0]
-    price  = float(np.mean(C_avg))
-    stderr = float(np.std(C_avg, ddof=1) / np.sqrt(P))
-    r2 = np.nanmean(np.vstack([res_pos.r2, res_neg.r2]), axis=0)
-    itm_counts = 0.5 * (res_pos.itm_counts + res_neg.itm_counts) 
-    return LSMResult(price=price, stderr=stderr, C_path=C_avg,
-                     exercised=(res_pos.exercised | res_neg.exercised),
-                     tau_idx=np.minimum(res_pos.tau_idx, res_neg.tau_idx),
-                     r2=r2, itm_counts=itm_counts, betas=[res_pos.betas, res_neg.betas])
-# ---------------------------------------------------------------------
 
 
 # -----------------------------
