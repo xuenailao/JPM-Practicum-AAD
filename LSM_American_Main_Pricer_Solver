@@ -150,29 +150,8 @@ def prepare_antithetic_paths_for_american(
                                   antithetic=False, return_Z=True, dtype=dtype, Z=-Z)
     return pack_pos, pack_neg
 
-
-# -----------------------------
-# 5) self_test
-# -----------------------------
-if __name__ == "__main__":
-    S0, r, q, sigma, T = 100.0, 0.03, 0.01, 0.2, 1.0
-    M, P, seed = 50, 200_000, 7
-    amc = simulate_gbm_paths(S0, r, q, sigma, T, M, P, seed=seed,
-                             antithetic=True, return_Z=True)
-    # E[e^{-rT} S_T] = S0 e^{-qT}
-    lhs = np.exp(-r * T) * amc.S[:, -1].mean()
-    rhs = S0 * np.exp(-q * T)
-    print(f"Martingale check: {lhs:.6f} vs {rhs:.6f}, rel.err={abs(lhs-rhs)/rhs:.3e}")
-
-    #
-    pack_pos, pack_neg = prepare_antithetic_paths_for_american(
-        S0, r, q, sigma, T, M, P, seed=seed
-    )
-    diff_normals = np.max(np.abs(pack_pos.Z + pack_neg.Z))
-    print(f"Antithetic Z consistency (should be 0 up to FP): {diff_normals:.3e}")
-
 # ------------------------------------------------------------
-# 6) Longstaff–Schwartz (LSM) for American options
+# 5) Longstaff–Schwartz (LSM) for American options
 # ------------------------------------------------------------
 
 # 3*3 Solver case-----------------------------------------------------
@@ -318,7 +297,7 @@ def lsm_price(
 
 
 # -----------------------------
-# 7) Usage example (American Put)
+# 6) Usage example (American Put)
 # -----------------------------
 if __name__ == "__main__":
     S0, r, q, sigma, T = 100.0, 0.03, 0.00, 0.2, 1.0
