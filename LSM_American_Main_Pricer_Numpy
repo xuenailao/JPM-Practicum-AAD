@@ -12,7 +12,6 @@ from dataclasses import dataclass
 from typing import Optional, Tuple, Callable
 
 Array = np.ndarray
-
 @dataclass
 class AMCPaths:
     S: Array         # (P, M+1)
@@ -27,8 +26,9 @@ class AMCPaths:
 
 
 # -----------------------------
-# 1) risk neutral GBM path
+# 1) Volatility
 # -----------------------------
+# ---- risk neutral GBM path -------------------------------------------------
 def make_Z_antithetic(P: int, M: int, seed: Optional[int] = None, dtype=np.float64) -> Array:
     rng = np.random.default_rng(seed)
     half = (P + 1) // 2
@@ -87,6 +87,234 @@ def simulate_gbm_paths(
     return AMCPaths(S=S, Z=Z_used if return_Z else None, t=t, disc=disc, dt=dt,
                     r=r, q=q, sigma=sigma, S0=S0)
 
+# ---- Local Vol -------------------------------------------------
+@dataclass
+class LocalVolSurface:
+    t_grid: np.ndarray        # shape (Nt,)
+    s_grid: np.ndarray        # shape (Ns,)
+    sigma_table: np.ndarray   # shape (Nt, Ns)
+    floor: float = 0.02
+    cap: float   = 3.00
+
+    def sigma(self, s: float, t: float) -> float:
+        t = float(np.clip(t, self.t_grid[0], self.t_grid[-1]))
+        s = float(np.clip(s, self.s_grid[0], self.s_grid[-1]))
+        i = np.searchsorted(self.t_grid, t)
+        j = np.searchsorted(self.s_grid, s)
+        i0 = max(0, min(i-1, len(self.t_grid)-1)); i1 = max(0, min(i, len(self.t_grid)-1))
+        j0 = max(0, min(j-1, len(self.s_grid)-1)); j1 = max(0, min(j, len(self.s_grid)-1))
+        wt = 0.0 if i1==i0 else (t - self.t_grid[i0])/(self.t_grid[i1]-self.t_grid[i0])
+        ws = 0.0 if j1==j0 else (s - self.s_grid[j0])/(self.s_grid[j1]-self.s_grid[j0])
+        sig0 = (1-ws)*self.sigma_table[i0, j0] + ws*self.sigma_table[i0, j1]
+        sig1 = (1-ws)*self.sigma_table[i1, j0] + ws*self.sigma_table[i1, j1]
+        sig  = (1-wt)*sig0 + wt*sig1
+        return float(np.clip(sig, self.floor, self.cap))
+
+def simulate_localvol_paths(
+    S0: float, r: float, q: float, T: float, M: int, P: int,
+    lv: LocalVolSurface, *, seed: int | None = None, Z: np.ndarray | None = None,
+) -> AMCPaths:
+    """
+    Local Vol paths with predictor–corrector per step.
+    - Always antithetic: uses provided Z (P,M) if given; otherwise generates antithetic Z.
+    """
+    dtype = np.float64
+    if M <= 0 or P <= 0: raise ValueError("M and P must be positive integers.")
+    dt = T / M
+    t  = np.linspace(0.0, T, M + 1, dtype=dtype)
+    sqrt_dt = np.sqrt(dt, dtype=dtype)
+
+    if Z is not None:
+        Z_used = np.asarray(Z, dtype=dtype)
+        if Z_used.shape != (P, M):
+            raise ValueError(f"Z must have shape (P,M)=({P},{M})")
+    else:
+        Z_used = make_Z_antithetic(P, M, seed=seed, dtype=dtype)
+
+    S = np.empty((P, M+1), dtype=dtype); S[:, 0] = S0
+    for i in range(M):
+        ti   = t[i]
+        sig0 = np.array([lv.sigma(s, ti) for s in S[:, i]], dtype=dtype)
+        mu0  = (r - q) - 0.5*sig0**2
+        S_star = S[:, i] * np.exp(mu0*dt + sig0*sqrt_dt*Z_used[:, i])
+        sig1 = np.array([lv.sigma(s, ti+dt) for s in S_star], dtype=dtype)
+        sig  = 0.5*(sig0 + sig1)
+        mu   = (r - q) - 0.5*sig**2
+        S[:, i+1] = S[:, i] * np.exp(mu*dt + sig*sqrt_dt*Z_used[:, i])
+
+    disc = float(np.exp(-r * dt))
+    return AMCPaths(
+    S=S,
+    Z=Z_used,
+    t=t,
+    disc=disc,
+    dt=dt,
+    r=r,
+    q=q,
+    sigma=float("nan"),
+    S0=S0,
+)
+
+
+# ---- Heston -------------------------------------
+def _heston_qe_step(v: np.ndarray, kappa: float, theta: float, sigma_v: float, dt: float, Z: np.ndarray) -> np.ndarray:
+    m  = theta + (v - theta)*np.exp(-kappa*dt)
+    s2 = (v*sigma_v**2*np.exp(-kappa*dt)/kappa)*(1-np.exp(-kappa*dt)) \
+       + theta*sigma_v**2*(1-np.exp(-kappa*dt))**2/(2*kappa)
+    psi = s2/np.maximum(m, 1e-16)**2
+    v_next = np.empty_like(v); psi_c = 1.5
+    i1 = psi <= psi_c
+    if np.any(i1):
+        b2 = 2/psi[i1] - 1 + np.sqrt(2/psi[i1]) * np.sqrt(2/psi[i1]-1)
+        a  = m[i1]/(1+b2)
+        v_next[i1] = a*(np.sqrt(b2)+Z[i1])**2
+    i2 = ~i1
+    if np.any(i2):
+        p  = (psi[i2]-1)/(psi[i2]+1); beta = (1-p)/m[i2]
+        U  = 0.5*(Z[i2]+1.0)
+        v_next[i2] = np.where(U<=p, 0.0, -np.log((1-p)/(1-U))/beta)
+    return np.maximum(v_next, 0.0)
+
+def simulate_heston_paths(
+    S0: float, r: float, q: float, T: float, M: int, P: int,
+    *, kappa: float, theta: float, sigma_v: float, rho: float, v0: float,
+    seed: int | None = None, Zs: np.ndarray | None = None, Zv: np.ndarray | None = None
+) -> AMCPaths:
+
+    dtype = np.float64
+    if M <= 0 or P <= 0: raise ValueError("M and P must be positive integers.")
+    dt = T / M
+    t  = np.linspace(0.0, T, M + 1, dtype=dtype)
+    sqrt_dt = np.sqrt(dt, dtype=dtype)
+
+    if (Zs is None) or (Zv is None):
+        Z1 = make_Z_antithetic(P, M, seed=seed, dtype=dtype)
+        Z2 = make_Z_antithetic(P, M, seed=None, dtype=dtype)
+        Zv_used = Z2
+        Zs_used = rho*Z2 + np.sqrt(max(1.0 - rho*rho, 0.0))*Z1
+    else:
+        Zs_used = np.asarray(Zs, dtype=dtype); Zv_used = np.asarray(Zv, dtype=dtype)
+        if Zs_used.shape!=(P,M) or Zv_used.shape!=(P,M):
+            raise ValueError("Zs/Zv must be shape (P,M)")
+
+    S = np.empty((P, M+1), dtype=dtype); S[:,0] = S0
+    v = np.empty((P, M+1), dtype=dtype); v[:,0] = max(v0, 1e-12)
+
+    for i in range(M):
+        v[:,i+1] = _heston_qe_step(v[:,i], kappa, theta, sigma_v, dt, Zv_used[:,i])
+        diff = np.sqrt(np.maximum(v[:,i], 0.0))
+        mu   = (r - q) - 0.5*diff**2
+        S[:,i+1] = S[:,i] * np.exp(mu*dt + diff*sqrt_dt*Zs_used[:,i])
+
+    disc = float(np.exp(-r * dt))
+    return AMCPaths(S=S, Z=Zs_used, t=t, disc=disc, dt=dt, r=r, q=q, sigma=float("nan"), S0=S0)
+
+def prepare
+
+# ---- SLV (σ_LV(S,t) * sqrt(v_t)) -----------------------------
+def simulate_slv_paths(
+    S0: float, r: float, q: float, T: float, M: int, P: int,
+    *, lv: LocalVolSurface, kappa: float, theta: float, sigma_v: float, rho: float, v0: float,
+    seed: int | None = None, Zs: np.ndarray | None = None, Zv: np.ndarray | None = None
+) -> AMCPaths:
+    """
+    Stochastic-Local Volatility:
+      dS/S = (r-q)dt + σ_LV(S,t)*sqrt(v_t)*dW^S
+      dv   = κ(θ-v)dt + σ_v sqrt(v) dW^v,  corr(dW^S, dW^v)=ρ
+    """
+    dtype = np.float64
+    if M <= 0 or P <= 0: raise ValueError("M and P must be positive integers.")
+    dt = T / M
+    t  = np.linspace(0.0, T, M + 1, dtype=dtype)
+    sqrt_dt = np.sqrt(dt, dtype=dtype)
+
+    if (Zs is None) or (Zv is None):
+        Z1 = make_Z_antithetic(P, M, seed=seed, dtype=dtype)
+        Z2 = make_Z_antithetic(P, M, seed=None, dtype=dtype)
+        Zv_used = Z2
+        Zs_used = rho*Z2 + np.sqrt(max(1.0 - rho*rho, 0.0))*Z1
+    else:
+        Zs_used = np.asarray(Zs, dtype=dtype); Zv_used = np.asarray(Zv, dtype=dtype)
+        if Zs_used.shape!=(P,M) or Zv_used.shape!=(P,M):
+            raise ValueError("Zs/Zv must be shape (P,M)")
+
+    S = np.empty((P, M+1), dtype=dtype); S[:,0] = S0
+    v = np.empty((P, M+1), dtype=dtype); v[:,0] = max(v0, 1e-12)
+
+    for i in range(M):
+        v[:,i+1] = _heston_qe_step(v[:,i], kappa, theta, sigma_v, dt, Zv_used[:,i])
+        #diffusion: σ_LV(S,t) * sqrt(v_t)
+        sig_lv = np.array([lv.sigma(s, t[i]) for s in S[:, i]], dtype=dtype)
+        diff   = sig_lv * np.sqrt(np.maximum(v[:,i], 0.0))
+        mu     = (r - q) - 0.5*diff**2
+        S[:,i+1] = S[:,i] * np.exp(mu*dt + diff*sqrt_dt*Zs_used[:,i])
+
+    disc = float(np.exp(-r * dt))
+    return AMCPaths(S=S, Z=Zs_used, t=t, disc=disc, dt=dt, r=r, q=q, sigma=float("nan"), S0=S0)
+
+def prepare_antithetic_paths_for_american_slv(
+    S0: float, r: float, q: float, T: float, M: int, P: int, *,
+    lv: LocalVolSurface, kappa: float, theta: float, sigma_v: float, rho: float, v0: float,
+    seed: int | None = None,
+    dtype=np.float64,
+) -> tuple[AMCPaths, AMCPaths]:
+    """Antithetic SLV paths"""
+    Z1 = make_Z_antithetic(P, M, seed=seed, dtype=dtype)
+    Z2 = make_Z_antithetic(P, M, seed=None, dtype=dtype)
+    Zs = rho * Z2 + np.sqrt(max(1.0 - rho * rho, 0.0)) * Z1
+    Zv = Z2
+    pos = simulate_slv_paths(
+        S0, r, q, T, M, P,
+        lv=lv, kappa=kappa, theta=theta, sigma_v=sigma_v,
+        rho=rho, v0=v0, Zs=Zs, Zv=Zv
+    )
+    neg = simulate_slv_paths(
+        S0, r, q, T, M, P,
+        lv=lv, kappa=kappa, theta=theta, sigma_v=sigma_v,
+        rho=rho, v0=v0, Zs=-Zs, Zv=-Zv
+    )
+    return pos, neg
+
+# -----------------------------
+# Usage Example:
+# -----------------------------
+    # --- (A) Local Vol ---
+    lv_pos, lv_neg = prepare_antithetic_paths_for_american_lv(S0, r, q, T, M, P, lv, seed=seed)
+    res_lv = lsm_price(lv_pos, K, payoff_put_now, basis_poly3, twin_pack=lv_neg)
+    print(f"[LV]   LSM American Put: price={res_lv.price:.6f}, SE={res_lv.stderr:.6f}")
+
+    '''
+    Local Vol paths (lv_pos, lv_neg) → fed into lsm_price().
+    twin_pack ensures antithetic averaging.
+    Output: res_lv contains the American option price under Local Vol.
+    '''
+
+    # --- (B) Heston ---
+    hes_pos, hes_neg = prepare_antithetic_paths_for_american_heston(
+        S0, r, q, T, M, P, kappa=kappa, theta=theta, sigma_v=sigma_v, rho=rho, v0=v0, seed=seed
+    )
+    res_hes = lsm_price(hes_pos, K, payoff_put_now, basis_poly3, twin_pack=hes_neg)
+    print(f"[Heston] LSM American Put: price={res_hes.price:.6f}, SE={res_hes.stderr:.6f}")
+
+    '''
+    Heston stochastic volatility paths → plugged into the same lsm_price().
+    twin_pack again reduces variance.
+    Result: res_hes is the LSM American price under Heston dynamics.
+    '''
+
+    # --- (C) SLV (σ_LV(S,t) * sqrt(v_t)) ---
+    slv_pos, slv_neg = prepare_antithetic_paths_for_american_slv(
+        S0, r, q, T, M, P, lv=lv, kappa=kappa, theta=theta, sigma_v=sigma_v, rho=rho, v0=v0, seed=seed
+    )
+    res_slv = lsm_price(slv_pos, K, payoff_put_now, basis_poly3, twin_pack=slv_neg)
+    print(f"[SLV]  LSM American Put: price={res_slv.price:.6f}, SE={res_slv.stderr:.6f}")
+
+    '''
+    SLV paths combine Local Vol smile + Heston random vol.
+    Passed into lsm_price() with antithetic averaging.
+    res_slv gives the American option price under SLV.
+    '''
+
 
 # -----------------------------
 #2)
@@ -109,22 +337,102 @@ def basis_poly3(x: Array) -> Array:
     x = np.asarray(x).reshape(-1, 1)
     return np.column_stack([np.ones_like(x), x, x**2, x**3])
 
-
 # -----------------------------
 # 4) Antithetic
 # -----------------------------
-def prepare_antithetic_paths_for_american(
+def prepare_antithetic_paths_for_american_gbm(
     S0: float, r: float, q: float, sigma: float,
     T: float, M: int, P: int, *,
     seed: Optional[int] = None,
     dtype=np.float64,
 ) -> Tuple[AMCPaths, AMCPaths]:
+    """Antithetic GBM paths"""
     Z = make_Z_antithetic(P, M, seed=seed, dtype=dtype)
     pack_pos = simulate_gbm_paths(S0, r, q, sigma, T, M, P, seed=None,
                                   antithetic=False, return_Z=True, dtype=dtype, Z=Z)
     pack_neg = simulate_gbm_paths(S0, r, q, sigma, T, M, P, seed=None,
                                   antithetic=False, return_Z=True, dtype=dtype, Z=-Z)
     return pack_pos, pack_neg
+
+
+def prepare_antithetic_paths_for_american_lv(
+    S0: float, r: float, q: float, T: float, M: int, P: int,
+    lv: LocalVolSurface, *,
+    seed: Optional[int] = None,
+    dtype=np.float64,
+) -> Tuple[AMCPaths, AMCPaths]:
+    """Antithetic Local Vol paths"""
+    Z = make_Z_antithetic(P, M, seed=seed, dtype=dtype)
+    pack_pos = simulate_localvol_paths(S0, r, q, T, M, P, lv, seed=None, Z=Z)
+    pack_neg = simulate_localvol_paths(S0, r, q, T, M, P, lv, seed=None, Z=-Z)
+    return pack_pos, pack_neg
+
+
+def prepare_antithetic_paths_for_american_heston(
+    S0: float, r: float, q: float, T: float, M: int, P: int, *,
+    kappa: float, theta: float, sigma_v: float, rho: float, v0: float,
+    seed: Optional[int] = None,
+    dtype=np.float64,
+) -> Tuple[AMCPaths, AMCPaths]:
+    """Antithetic Heston paths"""
+    Z1 = make_Z_antithetic(P, M, seed=seed, dtype=dtype)
+    Z2 = make_Z_antithetic(P, M, seed=None, dtype=dtype)
+    Zs = rho * Z2 + np.sqrt(max(1.0 - rho*rho, 0.0)) * Z1
+    Zv = Z2
+    pack_pos = simulate_heston_paths(S0, r, q, T, M, P,
+                                     kappa=kappa, theta=theta, sigma_v=sigma_v,
+                                     rho=rho, v0=v0, Zs=Zs, Zv=Zv)
+    pack_neg = simulate_heston_paths(S0, r, q, T, M, P,
+                                     kappa=kappa, theta=theta, sigma_v=sigma_v,
+                                     rho=rho, v0=v0, Zs=-Zs, Zv=-Zv)
+    return pack_pos, pack_neg
+
+
+def prepare_antithetic_paths_for_american_slv(
+    S0: float, r: float, q: float, T: float, M: int, P: int, *,
+    lv: LocalVolSurface, kappa: float, theta: float, sigma_v: float, rho: float, v0: float,
+    seed: Optional[int] = None,
+    dtype=np.float64,
+) -> Tuple[AMCPaths, AMCPaths]:
+    """Antithetic SLV paths"""
+    Z1 = make_Z_antithetic(P, M, seed=seed, dtype=dtype)
+    Z2 = make_Z_antithetic(P, M, seed=None, dtype=dtype)
+    Zs = rho * Z2 + np.sqrt(max(1.0 - rho*rho, 0.0)) * Z1
+    Zv = Z2
+    pack_pos = simulate_slv_paths(S0, r, q, T, M, P,
+                                  lv=lv, kappa=kappa, theta=theta, sigma_v=sigma_v,
+                                  rho=rho, v0=v0, Zs=Zs, Zv=Zv)
+    pack_neg = simulate_slv_paths(S0, r, q, T, M, P,
+                                  lv=lv, kappa=kappa, theta=theta, sigma_v=sigma_v,
+                                  rho=rho, v0=v0, Zs=-Zs, Zv=-Zv)
+    return pack_pos, pack_neg
+
+
+def prepare_antithetic_paths_for_american(
+    mode: str,
+    S0: float, r: float, q: float, T: float, M: int, P: int,
+    *,
+    sigma: float = None,
+    lv: LocalVolSurface = None,
+    kappa: float = None, theta: float = None, sigma_v: float = None, rho: float = None, v0: float = None,
+    seed: Optional[int] = None,
+    dtype=np.float64,
+) -> Tuple[AMCPaths, AMCPaths]:
+    """Unified dispatcher: choose GBM, LV, Heston, or SLV"""
+    if mode == "GBM":
+        return prepare_antithetic_paths_for_american_gbm(S0, r, q, sigma, T, M, P, seed=seed, dtype=dtype)
+    elif mode == "LV":
+        return prepare_antithetic_paths_for_american_lv(S0, r, q, T, M, P, lv, seed=seed, dtype=dtype)
+    elif mode == "Heston":
+        return prepare_antithetic_paths_for_american_heston(S0, r, q, T, M, P,
+                                                            kappa=kappa, theta=theta, sigma_v=sigma_v,
+                                                            rho=rho, v0=v0, seed=seed, dtype=dtype)
+    elif mode == "SLV":
+        return prepare_antithetic_paths_for_american_slv(S0, r, q, T, M, P,
+                                                         lv=lv, kappa=kappa, theta=theta, sigma_v=sigma_v,
+                                                         rho=rho, v0=v0, seed=seed, dtype=dtype)
+    else:
+        raise ValueError(f"Unknown model {mode}")
 
 
 # -----------------------------
@@ -151,12 +459,10 @@ if __name__ == "__main__":
 # 6) Longstaff–Schwartz (LSM) for American options
 # ------------------------------------------------------------
 
-# Numpy case-----------------------------------------------------
 def _ols_beta(X: Array, y: Array) -> Array:
     # β = argmin ||Xβ - y||_2
     beta, *_ = np.linalg.lstsq(X, y, rcond=None)
     return beta
-# ------------------------------------------------------------
 
 @dataclass
 class LSMResult:
@@ -169,7 +475,6 @@ class LSMResult:
     itm_counts: Array     # Number of in-the-money samples per step (same as above)
     betas: list           # Regression coefficients β at each step (or NaN if not available)
 
-# Numpy case-----------------------------------------------------
 def _lsm_single_pack(
     pack: AMCPaths,
     K: float,
@@ -272,8 +577,6 @@ def lsm_price(
         tau_idx=np.minimum(res_pos.tau_idx, res_neg.tau_idx),
         r2=r2, itm_counts=itm_counts, betas=[res_pos.betas, res_neg.betas]
     )
-# --------------------------------------------------------------------
-
 
 # -----------------------------
 # 7) Usage example (American Put)
