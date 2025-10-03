@@ -318,3 +318,32 @@ if __name__ == "__main__":
     print([float(f'{abs(Vega-Vega_ref):.3e}')])
     print([float(f'{abs(Vanna-Vanna_ref):.3e}')])
     print([float(f'{abs(Vomma-Vomma_ref):.3e}')])
+
+
+import numpy as np
+def numeric_hessian(f, x, h=1e-6):
+    x = np.array(x, dtype=float)
+    n = len(x)
+    H = np.zeros((n, n))
+    
+    # Diagonal elements H[i,i]
+    for i in range(n):
+        xp = x.copy(); xp[i] += h
+        xm = x.copy(); xm[i] -= h
+        fph = f(xp)
+        fmh = f(xm)
+        f00 = f(x)
+        H[i, i] = (fph - 2*f00 + fmh) / (h*h)
+    
+    # Off-diagonal elements H[i,j] (i<j), computed using mixed central differences
+    for i in range(n):
+        for j in range(i+1, n):
+            xpp = x.copy(); xpp[i] += h; xpp[j] += h
+            xpm = x.copy(); xpm[i] += h; xpm[j] -= h
+            xmp = x.copy(); xmp[i] -= h; xmp[j] += h
+            xmm = x.copy(); xmm[i] -= h; xmm[j] -= h
+            val = (f(xpp) - f(xpm) - f(xmp) + f(xmm)) / (4*h*h)
+            H[i, j] = val
+            H[j, i] = val  # Symmetric
+    
+    return H
