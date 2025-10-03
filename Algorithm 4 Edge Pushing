@@ -1,0 +1,320 @@
+import math
+from collections import defaultdict
+from dataclasses import dataclass
+from typing import List, Tuple, Dict, Optional
+
+# ----------------------------
+# Node & Tape helpers
+# ----------------------------
+@dataclass
+class Node:
+    op: str
+    inputs: List[int]
+    value: Optional[float] = None
+
+def add_node(tape: List[Node], op: str, inputs: List[int]) -> int:
+    tape.append(Node(op, inputs, None))
+    return len(tape) - 1 #index of new node
+
+def make_input(tape: List[Node]) -> int:
+    return add_node(tape, 'input', [])
+
+def make_const(tape: List[Node], c: float) -> int:
+    idx = add_node(tape, 'const', [])
+    tape[idx].value = c
+    return idx
+
+# ----------------------------
+# Forward eval (必须先跑一次)
+# ----------------------------
+def forward_eval(tape: List[Node], x_values: Dict[int, float]) -> None:
+    for i, nd in enumerate(tape):
+        if nd.op == 'input':
+            nd.value = x_values[i]
+        elif nd.op == 'const':
+            pass
+        elif nd.op == 'add':
+            a, b = (tape[j].value for j in nd.inputs)
+            nd.value = a + b
+        elif nd.op == 'sub':
+            a, b = (tape[j].value for j in nd.inputs)
+            nd.value = a - b
+        elif nd.op == 'mul':
+            a, b = (tape[j].value for j in nd.inputs)
+            nd.value = a * b
+        elif nd.op == 'div':
+            a, b = (tape[j].value for j in nd.inputs)
+            nd.value = a / b
+        elif nd.op == 'sin':
+            a = tape[nd.inputs[0]].value
+            nd.value = math.sin(a)
+        elif nd.op == 'cos':
+            a = tape[nd.inputs[0]].value
+            nd.value = math.cos(a)
+        elif nd.op == 'neg':
+            a = tape[nd.inputs[0]].value
+            nd.value = -a
+        elif nd.op == 'exp':
+            a = tape[nd.inputs[0]].value
+            nd.value = math.exp(a)
+        elif nd.op == 'log':
+            a = tape[nd.inputs[0]].value
+            nd.value = math.log(a)
+        elif nd.op == 'sqrt':
+            a = tape[nd.inputs[0]].value
+            nd.value = math.sqrt(a)
+        elif nd.op == 'square':
+            a = tape[nd.inputs[0]].value
+            nd.value = a*a
+        elif nd.op == 'phi':   
+            a = tape[nd.inputs[0]].value
+            nd.value = math.exp(-0.5*a*a)/math.sqrt(2*math.pi)
+        elif nd.op == 'Phi':  
+            a = tape[nd.inputs[0]].value
+            nd.value = 0.5*(1.0 + math.erf(a/math.sqrt(2.0)))
+        else:
+            raise ValueError(f"Unknown op {nd.op}")
+
+# ----------------------------
+# Edge-pushing Hessian（返回 H 与 grad）
+# ----------------------------
+def algorithm4_hessian_and_grad(tape: List[Node], input_indices: List[int], verbose: bool=False):
+    n = len(tape)
+    out = n - 1
+    bar = [0.0] * n
+    bar[out] = 1.0
+
+    W: Dict[Tuple[int, int], float] = {}
+
+    def add_w(W: Dict[Tuple[int,int], float], key: Tuple[int,int], inc: float):
+        a, b = key
+        W[(a, b)] = W.get((a, b), 0.0) + inc
+
+    def local_derivatives(i: int):
+        nd = tape[i]
+        if nd.op == 'add':
+            return [1.0, 1.0], {}
+        if nd.op == 'sub':
+            return [1.0, -1.0], {}
+        if nd.op == 'mul':
+            a = tape[nd.inputs[0]].value
+            b = tape[nd.inputs[1]].value
+            return [b, a], {(0,1): 1.0, (1,0): 1.0}
+        if nd.op == 'div':
+            a = tape[nd.inputs[0]].value
+            b = tape[nd.inputs[1]].value
+            return [1/b, -a/(b*b)], {(1,1): 2*a/(b**3), (0,1): -1/(b*b), (1,0): -1/(b*b)}
+        if nd.op == 'neg':
+            return [-1.0], {(0,0): 0.0}
+        if nd.op == 'exp':
+            a = tape[nd.inputs[0]].value
+            ea = math.exp(a)
+            return [ea], {(0,0): ea}
+        if nd.op == 'sin':
+            a = tape[nd.inputs[0]].value
+            return [math.cos(a)], {(0,0): -math.sin(a)}
+        if nd.op == 'cos':
+            a = tape[nd.inputs[0]].value
+            return [-math.sin(a)], {(0,0): -math.cos(a)}
+        if nd.op == 'log':
+            a = tape[nd.inputs[0]].value
+            return [1.0/a], {(0,0): -1.0/(a*a)}
+        if nd.op == 'sqrt':
+            a = tape[nd.inputs[0]].value
+            return [0.5/math.sqrt(a)], {(0,0): -0.25/(a**1.5)}
+        if nd.op == 'square':
+            a = tape[nd.inputs[0]].value
+            return [2*a], {(0,0): 2.0}
+        if nd.op == 'phi':   # φ'(x) = -x φ(x), φ''(x) = (x^2 - 1) φ(x)
+            a = tape[nd.inputs[0]].value
+            val = math.exp(-0.5*a*a)/math.sqrt(2*math.pi)
+            return [-a*val], {(0,0): (a*a-1)*val}
+        if nd.op == 'Phi':   # Φ'(x)=φ(x), Φ''(x)=-x φ(x)
+            a = tape[nd.inputs[0]].value
+            pdf = math.exp(-0.5*a*a)/math.sqrt(2*math.pi)
+            return [pdf], {(0,0): -a*pdf}
+        if nd.op in ('input','const'):
+            return [], {}
+        raise ValueError(nd.op)
+
+    # 反向遍历（edge pushing + 一阶反传）
+    for i in range(n-1, -1, -1):
+        nd = tape[i]
+        preds = nd.inputs
+
+        if nd.op in ('input','const'):
+            if verbose:
+                print(f"\n=== Node {i} ({nd.op}) === (skip)")
+            continue
+
+        if verbose:
+            print(f"\n=== Node {i} ({nd.op}) ===")
+
+        # Pushing
+        touching = [(k, wv) for k, wv in list(W.items()) if (i == k[0] or i == k[1])]
+        if touching:
+            d1, _ = local_derivatives(i)
+            for (a, b), wv in touching:
+                del W[(a, b)]
+                if a == i and b == i: # Pushing Hi,i; Hj,k += Hi,i*(∂vi/∂vj)*(∂vi/∂vk)
+                    for pj in range(len(preds)):
+                        for pk in range(len(preds)):
+                            j = preds[pj]; k2 = preds[pk]
+                            add_w(W, (j, k2), wv * d1[pj] * d1[pk])
+                elif b == i: # Pushing Ha,i; Ha,j += Ha,i*(∂vi/∂vj)
+                    p = a
+                    for pj in range(len(preds)):
+                        j = preds[pj]
+                        add_w(W, (p, j), wv * d1[pj])
+                elif a == i: # Pushing Hi,b; Hj,b += Hi,b*(∂vi/∂vj)
+                    p = b
+                    for pj in range(len(preds)):
+                        j = preds[pj]
+                        add_w(W, (j, p), wv * d1[pj])
+
+        # Creating
+        _, d2 = local_derivatives(i)
+        for (ai, bi), val in d2.items():
+            if abs(val) > 1e-15:
+                j = preds[ai]; k2 = preds[bi]
+                add_w(W, (j, k2), bar[i] * val)
+
+        # Adjoint
+        d1, _ = local_derivatives(i)
+        for pj in range(len(preds)):
+            bar[preds[pj]] += bar[i] * d1[pj]
+
+    # Assemble Hessian
+    m = len(input_indices)
+    H = [[0.0] * m for _ in range(m)]
+    for a in range(m):
+        ia = input_indices[a]
+        for b in range(m):
+            ib = input_indices[b]
+            if ia == ib:
+                H[a][b] = W.get((ia, ib), 0.0)
+            else:
+                val = W.get((ia, ib), 0.0) + W.get((ib, ia), 0.0)
+                H[a][b] = 0.5 * val
+
+    grad = [bar[idx] for idx in input_indices]
+    return H, grad
+
+# ----------------------------
+# 构建 Black–Scholes 看涨价格的 Tape
+# 输入顺序：S, K, r, sigma, T
+# ----------------------------
+def build_bs_call_tape():
+    tape: List[Node] = []
+    iS = make_input(tape)
+    iK = make_input(tape)
+    ir = make_input(tape)
+    isig = make_input(tape)
+    iT = make_input(tape)
+
+    c_half = make_const(tape, 0.5)
+    c_one  = make_const(tape, 1.0)
+    c_zero = make_const(tape, 0.0)
+
+    # ln(S/K)
+    S_div_K = add_node(tape, 'div', [iS, iK])
+    ln_S_over_K = add_node(tape, 'log', [S_div_K])
+
+    # (r + 0.5 * sigma^2) * T
+    sig_sq = add_node(tape, 'mul', [isig, isig])
+    half_sig_sq = add_node(tape, 'mul', [c_half, sig_sq])
+    r_plus_half_sig2 = add_node(tape, 'add', [ir, half_sig_sq])
+    term_num = add_node(tape, 'mul', [r_plus_half_sig2, iT])
+
+    # denom = sigma * sqrt(T)
+    sqrtT = add_node(tape, 'sqrt', [iT])
+    denom = add_node(tape, 'mul', [isig, sqrtT])
+
+    # d1, d2
+    num = add_node(tape, 'add', [ln_S_over_K, term_num])
+    d1 = add_node(tape, 'div', [num, denom])
+    sig_sqrtT = add_node(tape, 'mul', [isig, sqrtT])
+    d2 = add_node(tape, 'sub', [d1, sig_sqrtT])
+
+    # price = S*Phi(d1) - K*exp(-rT)*Phi(d2)
+    Phi_d1 = add_node(tape, 'Phi', [d1])
+    term1 = add_node(tape, 'mul', [iS, Phi_d1])
+
+    rT = add_node(tape, 'mul', [ir, iT])
+    neg_rT = add_node(tape, 'neg', [rT])
+    disc = add_node(tape, 'exp', [neg_rT])           # e^{-rT}
+    Phi_d2 = add_node(tape, 'Phi', [d2])
+    term2 = add_node(tape, 'mul', [iK, disc])        # K * e^{-rT}
+    term2 = add_node(tape, 'mul', [term2, Phi_d2])   # K e^{-rT} Φ(d2)
+
+    price = add_node(tape, 'sub', [term1, term2])    # 输出节点
+
+    input_indices = [iS, isig, ir, iT, iK]  # 想要的梯度/海森顺序（S, σ, r, T, K）
+    return tape, input_indices
+
+# ----------------------------
+# 演示：计算 Delta/Gamma/Vega/Vanna/Vomma 并与解析式对比
+# ----------------------------
+if __name__ == "__main__":
+    # 典型参数
+    S = 100.0
+    K = 100.0
+    r = 0.05
+    sigma = 0.20
+    T = 1.0
+
+    tape, input_indices = build_bs_call_tape()
+    x_map = {
+        input_indices[0]: S,      # iS
+        input_indices[1]: sigma,  # isig
+        input_indices[2]: r,      # ir
+        input_indices[3]: T,      # iT
+        input_indices[4]: K,      # iK
+    }
+    # 注意：上面 x_map 的 key 是“输入节点索引”，不是位置 0..4。这里正好 input_indices 顺序就是输入节点顺序，简化了映射。
+
+    forward_eval(tape, x_map)
+    H, grad = algorithm4_hessian_and_grad(tape, input_indices, verbose=False)
+
+    # 读出 Greeks（按 input_indices 的顺序）
+    # inputs: [S, σ, r, T, K]
+    Delta = grad[0]
+    Vega  = grad[1]
+    Gamma = H[0][0]
+    Vanna = H[0][1]    # ∂^2 V / ∂S∂σ
+    Vomma = H[1][1]    # ∂^2 V / ∂σ^2
+
+    # 解析对比
+    denom = sigma*math.sqrt(T)
+    d1 = (math.log(S/K) + (r + 0.5*sigma*sigma)*T)/denom
+    d2 = d1 - denom
+    pdf = math.exp(-0.5*d1*d1)/math.sqrt(2*math.pi)
+    Delta_ref = 0.5*(1.0 + math.erf(d1/math.sqrt(2.0)))
+    Gamma_ref = pdf/(S*denom)
+    Vega_ref  = S*math.sqrt(T)*pdf
+    # 常用公式：Vomma(Volga) = Vega * d1 * d2 / σ
+    Vomma_ref = Vega_ref * d1 * d2 / sigma
+    # Vanna 常见形式：Vanna = ∂^2V/∂S∂σ = Vega/S * (1 - d1/(σ√T))
+    Vanna_ref = (Vega_ref/S) * (1.0 - d1/denom)
+
+    print("Edge Pushing：")
+    print(f"  Delta = {Delta:.8f}")
+    print(f"  Gamma = {Gamma:.8f}")
+    print(f"  Vega  = {Vega:.8f}")
+    print(f"  Vanna = {Vanna:.8f}")
+    print(f"  Vomma = {Vomma:.8f}")
+
+    print("\nNumeric：")
+    print(f"  Delta_ref = {Delta:.8f}")
+    print(f"  Gamma_ref = {Gamma_ref:.8f}")
+    print(f"  Vega_ref  = {Vega_ref:.8f}")
+    print(f"  Vanna_ref = {Vanna_ref:.8f}")
+    print(f"  Vomma_ref = {Vomma_ref:.8f}")
+    
+
+    print('\nAbs diff (Alg4 - Numeric):')
+    print([float(f'{abs(Delta-Delta_ref):.3e}')])
+    print([float(f'{abs(Gamma-Gamma_ref):.3e}')])
+    print([float(f'{abs(Vega-Vega_ref):.3e}')])
+    print([float(f'{abs(Vanna-Vanna_ref):.3e}')])
+    print([float(f'{abs(Vomma-Vomma_ref):.3e}')])
