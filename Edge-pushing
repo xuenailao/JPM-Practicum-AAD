@@ -1,0 +1,307 @@
+import numpy as np
+from dataclasses import dataclass
+from typing import Dict, List
+from enum import Enum
+import math
+
+# ============== 基础算子 ==============
+class OpType(Enum):
+    ADD = '+'
+    SUB = '-'
+    MUL = '*'
+    DIV = '/'
+    POW = '**'
+    EXP = 'exp'
+    LOG = 'log'
+    NORMCDF = 'normcdf'
+    INPUT = 'input'
+
+@dataclass
+class Node:
+    index: int
+    op: OpType
+    predecessors: List[int]
+    value: float = 0.0
+    is_constant: bool = False
+
+
+# ============== 计算图 ==============
+class ComputationalGraph:
+    def __init__(self, n_inputs: int):
+        self.n = n_inputs
+        self.ell = 0
+        self.nodes: Dict[int, Node] = {}
+        for i in range(1 - n_inputs, 1):
+            self.nodes[i] = Node(i, OpType.INPUT, [])
+        self.next_node_idx = 1
+
+    def add_constant(self, value: float) -> int:
+        node_idx = self.next_node_idx
+        self.nodes[node_idx] = Node(node_idx, OpType.INPUT, [], float(value), True)
+        self.next_node_idx += 1
+        return node_idx
+
+    def add_binary_op(self, op: OpType, left: int, right: int) -> int:
+        node_idx = self.next_node_idx
+        self.nodes[node_idx] = Node(node_idx, op, [left, right])
+        self.next_node_idx += 1
+        return node_idx
+
+    def add_unary_op(self, op: OpType, operand: int) -> int:
+        node_idx = self.next_node_idx
+        self.nodes[node_idx] = Node(node_idx, op, [operand])
+        self.next_node_idx += 1
+        return node_idx
+
+    def finalize(self):
+        self.ell = self.next_node_idx - 1
+
+    # ---------- 前向传播 ----------
+    def forward_sweep(self, x: np.ndarray):
+        for i, val in enumerate(x):
+            self.nodes[i + 1 - self.n].value = float(val)
+        for i in range(1, self.ell + 1):
+            if i not in self.nodes:
+                continue
+            node = self.nodes[i]
+            if node.is_constant or node.op == OpType.INPUT:
+                continue
+            if node.op == OpType.EXP:
+                v = self.nodes[node.predecessors[0]].value
+                node.value = np.exp(v)
+            elif node.op == OpType.LOG:
+                v = self.nodes[node.predecessors[0]].value
+                node.value = np.log(v)
+            elif node.op == OpType.NORMCDF:
+                v = self.nodes[node.predecessors[0]].value
+                node.value = 0.5 * (1.0 + math.erf(v / math.sqrt(2.0)))
+            else:
+                v = [self.nodes[p].value for p in node.predecessors]
+                if node.op == OpType.ADD:
+                    node.value = v[0] + v[1]
+                elif node.op == OpType.SUB:
+                    node.value = v[0] - v[1]
+                elif node.op == OpType.MUL:
+                    node.value = v[0] * v[1]
+                elif node.op == OpType.DIV:
+                    node.value = v[0] / v[1]
+                elif node.op == OpType.POW:
+                    node.value = v[0] ** v[1]
+        return self.nodes[self.ell].value
+
+    def get_predecessors(self, i: int) -> List[int]:
+        if i not in self.nodes:
+            return []
+        node = self.nodes[i]
+        if node.op == OpType.INPUT:
+            return []
+        return node.predecessors
+
+    # ---------- 局部一阶导 ----------
+    def partial_derivative(self, i: int, j: int) -> float:
+        node = self.nodes[i]
+        preds = node.predecessors
+        if j in self.nodes and self.nodes[j].is_constant:
+            return 0.0
+        if node.op == OpType.EXP:
+            if j != preds[0]: return 0.0
+            v = self.nodes[preds[0]].value
+            return np.exp(v)
+        if node.op == OpType.LOG:
+            if j != preds[0]: return 0.0
+            v = self.nodes[preds[0]].value
+            return 1.0 / v
+        if node.op == OpType.NORMCDF:
+            if j != preds[0]: return 0.0
+            v = self.nodes[preds[0]].value
+            return (1.0/math.sqrt(2*math.pi)) * math.exp(-0.5*v*v)
+        if j not in preds:
+            return 0.0
+        pred_pos = preds.index(j)
+        v = [self.nodes[p].value for p in preds]
+        if node.op == OpType.ADD:
+            return 1.0
+        if node.op == OpType.SUB:
+            return 1.0 if pred_pos == 0 else -1.0
+        if node.op == OpType.MUL:
+            return v[1 - pred_pos]
+        if node.op == OpType.DIV:
+            return 1.0 / v[1] if pred_pos == 0 else -v[0] / (v[1] ** 2)
+        if node.op == OpType.POW:
+            if pred_pos == 0:
+                return v[1] * (v[0] ** (v[1] - 1.0))
+            else:
+                return (v[0] ** v[1]) * np.log(v[0])
+        return 0.0
+
+    # ---------- 局部二阶导 ----------
+    def second_derivative(self, i: int, j: int, k: int) -> float:
+        node = self.nodes[i]
+        preds = node.predecessors
+        if j in self.nodes and self.nodes[j].is_constant:
+            return 0.0
+        if k in self.nodes and self.nodes[k].is_constant:
+            return 0.0
+        if node.op == OpType.EXP:
+            if not (j == k == preds[0]): return 0.0
+            v = self.nodes[preds[0]].value
+            return np.exp(v)
+        if node.op == OpType.LOG:
+            if not (j == k == preds[0]): return 0.0
+            v = self.nodes[preds[0]].value
+            return -1.0 / (v ** 2)
+        if node.op == OpType.NORMCDF:
+            if not (j == k == preds[0]): return 0.0
+            v = self.nodes[preds[0]].value
+            phi = (1.0/math.sqrt(2*math.pi)) * math.exp(-0.5*v*v)
+            return -v * phi
+        if node.op in [OpType.ADD, OpType.SUB]:
+            return 0.0
+        v = [self.nodes[p].value for p in preds]
+        if node.op == OpType.MUL:
+            if j != k and j in preds and k in preds:
+                return 1.0
+            return 0.0
+        if node.op == OpType.DIV:
+            if j == preds[0] and k == preds[1]:
+                return -1.0 / (v[1] ** 2)
+            if j == preds[1] and k == preds[0]:
+                return -1.0 / (v[1] ** 2)
+            if j == preds[1] and k == preds[1]:
+                return 2.0 * v[0] / (v[1] ** 3)
+            return 0.0
+        if node.op == OpType.POW:
+            if j == preds[0] and k == preds[0]:
+                return v[1] * (v[1] - 1.0) * (v[0] ** (v[1] - 2.0))
+            if j == preds[1] and k == preds[1]:
+                return (v[0] ** v[1]) * (np.log(v[0]) ** 2)
+            if (j == preds[0] and k == preds[1]) or (j == preds[1] and k == preds[0]):
+                return (v[0] ** (v[1] - 1.0)) * (1.0 + v[1] * np.log(v[0]))
+            return 0.0
+        return 0.0
+
+    # ---------- Edge-Pushing Hessian ----------
+    def compute_hessian(self, x: np.ndarray) -> np.ndarray:
+        _ = self.forward_sweep(x)
+        v_bar = {i: 0.0 for i in range(1 - self.n, self.ell)}
+        v_bar[self.ell] = 1.0
+        w = {}
+        for i in range(1 - self.n, self.ell + 1):
+            for j in range(1 - self.n, i + 1):
+                w[(j, i)] = 0.0
+        for i in range(self.ell, 0, -1):
+            node = self.nodes[i]
+            if node.op == OpType.INPUT or node.is_constant:
+                continue
+            for p in range(1 - self.n, i + 1):
+                key_pi = (min(p, i), max(p, i))
+                if abs(w[key_pi]) < 1e-15:
+                    continue
+                w_pi = w[key_pi]
+                if p != i:
+                    for j in self.get_predecessors(i):
+                        if j == p:
+                            deriv = self.partial_derivative(i, p)
+                            w[(p, p)] += 2.0 * deriv * w_pi
+                        else:
+                            deriv = self.partial_derivative(i, j)
+                            key = (min(j, p), max(j, p))
+                            w[key] += deriv * w_pi
+                else:
+                    preds = self.get_predecessors(i)
+                    for j in preds:
+                        for k in preds:
+                            if j <= k:
+                                w[(j, k)] += (self.partial_derivative(i, j)
+                                              * self.partial_derivative(i, k)
+                                              * w_pi)
+                w[key_pi] = 0.0
+            preds = self.get_predecessors(i)
+            for j in preds:
+                for k in preds:
+                    if j <= k:
+                        s2 = self.second_derivative(i, j, k)
+                        if abs(s2) > 1e-15 and v_bar[i] != 0.0:
+                            w[(j, k)] += v_bar[i] * s2
+            for j in self.get_predecessors(i):
+                v_bar[j] += v_bar[i] * self.partial_derivative(i, j)
+        H = np.zeros((self.n, self.n))
+        for row_idx in range(self.n):
+            for col_idx in range(self.n):
+                i = row_idx + 1 - self.n
+                j = col_idx + 1 - self.n
+                key = (min(i, j), max(i, j))
+                if key in w:
+                    H[row_idx, col_idx] = w[key]
+        return H
+
+
+# ============== 包装成自动构建节点的 VarNode ==============
+class VarNode:
+    def __init__(self, graph, node_id):
+        self.graph = graph
+        self.node_id = node_id
+
+    def __add__(self, other):
+        other = other if isinstance(other, VarNode) else VarNode(self.graph, self.graph.add_constant(other))
+        return VarNode(self.graph, self.graph.add_binary_op(OpType.ADD, self.node_id, other.node_id))
+    __radd__ = __add__
+
+    def __sub__(self, other):
+        other = other if isinstance(other, VarNode) else VarNode(self.graph, self.graph.add_constant(other))
+        return VarNode(self.graph, self.graph.add_binary_op(OpType.SUB, self.node_id, other.node_id))
+    def __rsub__(self, other):
+        other = other if isinstance(other, VarNode) else VarNode(self.graph, self.graph.add_constant(other))
+        return VarNode(self.graph, self.graph.add_binary_op(OpType.SUB, other.node_id, self.node_id))
+
+    def __mul__(self, other):
+        other = other if isinstance(other, VarNode) else VarNode(self.graph, self.graph.add_constant(other))
+        return VarNode(self.graph, self.graph.add_binary_op(OpType.MUL, self.node_id, other.node_id))
+    __rmul__ = __mul__
+
+    def __truediv__(self, other):
+        other = other if isinstance(other, VarNode) else VarNode(self.graph, self.graph.add_constant(other))
+        return VarNode(self.graph, self.graph.add_binary_op(OpType.DIV, self.node_id, other.node_id))
+    def __rtruediv__(self, other):
+        other = other if isinstance(other, VarNode) else VarNode(self.graph, self.graph.add_constant(other))
+        return VarNode(self.graph, self.graph.add_binary_op(OpType.DIV, other.node_id, self.node_id))
+
+    def __pow__(self, power):
+        power = power if isinstance(power, VarNode) else VarNode(self.graph, self.graph.add_constant(power))
+        return VarNode(self.graph, self.graph.add_binary_op(OpType.POW, self.node_id, power.node_id))
+
+    def __neg__(self):
+        neg1 = VarNode(self.graph, self.graph.add_constant(-1.0))
+        return VarNode(self.graph, self.graph.add_binary_op(OpType.MUL, neg1.node_id, self.node_id))
+
+    def exp(self):
+        return VarNode(self.graph, self.graph.add_unary_op(OpType.EXP, self.node_id))
+    def log(self):
+        return VarNode(self.graph, self.graph.add_unary_op(OpType.LOG, self.node_id))
+    def normcdf(self):
+        return VarNode(self.graph, self.graph.add_unary_op(OpType.NORMCDF, self.node_id))
+
+
+# ============== 构图 Black–Scholes ==============
+def build_bsm_call(graph: ComputationalGraph, S, K, T, r, sigma):
+    d1 = ((S/K).log() + (r + 0.5*sigma**2)*T) / (sigma * (T**0.5))
+    d2 = d1 - sigma * (T**0.5)
+    return S * d1.normcdf() - K * ((-r*T).exp()) * d2.normcdf()
+
+
+# ============== 测试 ==============
+if __name__ == "__main__":
+    graph = ComputationalGraph(n_inputs=5)
+    S = VarNode(graph, -4)
+    K = VarNode(graph, -3)
+    T = VarNode(graph, -2)
+    r = VarNode(graph, -1)
+    sigma = VarNode(graph, 0)
+
+    C = build_bsm_call(graph, S, K, T, r, sigma)
+    graph.finalize()
+
+    x = np.array([100.0, 100.0, 1.0, 0.05, 0.3])
+    H = graph.compute_hessian(x)
+    print("精确 Black–Scholes Hessian :")
+    print(H)
