@@ -293,43 +293,43 @@ def _R_local_partial(node, parent_idx):
 
 # ---------------- Edge-Pushing: Componentwise (Algorithm 4) ---------------- #
 from collections import defaultdict
+import numpy as np
+from typing import Dict, Sequence, Union
 
-def edge_push_hessian(f, inputs: dict, *, sparse: bool = True):
+from .tape import global_tape, use_tape
+from .var import ADVar
+
+# ---------------- Edge‑Pushing: Componentwise (Algorithm 4) ---------------- #
+# This version follows the paper’s control flow literally: for i = L…1 do
+#   (1) Pushing   (push masses involving y_i onto parents)
+#   (2) Creating  (add vbar[i] * local 2nd derivatives into {·} / {·,·} space)
+#   (3) Adjoint   (standard first‑order reverse propagation)
+# After the sweep, (4) Projection: H = P W P^T — project all masses that land on
+# input–input pairs into the final Hessian buckets. No on‑the‑fly projection.
+
+
+def edge_push_hessian(
+    f,
+    inputs: Dict[str, Union[float, int, np.ndarray, ADVar]],
+    *,
+    sparse: bool = False,
+):
     """
-    Compute the full Hessian ∇²f(x) using the componentwise edge-pushing algorithm
-    (Algorithm 4), including a proper Pushing phase so composite nodes are handled.
+    Compute the full Hessian ∇²f(x) via the componentwise edge‑pushing algorithm
+    (Algorithm 4). This implementation keeps *all* intermediate pair masses in a
+    variable‑pair accumulator `W_var_pairs` keyed by
+        frozenset({id_a})  for singletons {a}
+        frozenset({id_a, id_b}) for unordered pairs {a,b}
+    and only performs the Projection step at the very end (H = P W Pᵀ).
 
     Parameters
     ----------
-    f : callable(vars_dict) -> ADVar
-        Scalar-output function defined with ADVars.
-    inputs : dict[str, float]
-        Input values; wrapped as ADVar(requires_grad=True).
-    sparse : bool, default True
-        If True, return a dict-based sparse Hessian;
-        If False, return a dense np.ndarray in the order of inputs.keys().
-
-    Returns
-    -------
-    If sparse:
-        dict[frozenset({i,j})] -> float
-            Nonzero Hessian entries (diagonal stored as frozenset({i})).
-    Else:
-        np.ndarray of shape [n, n]
-            Dense Hessian matrix.
-
-    Algorithm mapping (to paper Algorithm 4):
-        - Initialization : vbar[...] = 0; variable-pair worklist W_var_pairs = ∅
-        - Reverse loop   : for i = L,...,1
-            * Pushing    : for every pair that involves node.out, push it to parents
-                           using first-order local partials (J_y wrt parents)
-            * Creating   : add vbar[i] * local second derivatives into variable pairs
-            * Adjoint    : propagate first-order adjoints
-        - Output         : deposit all pairs that have become input–input into H
+    f : callable({name: ADVar}) -> ADVar   # scalar output
+    inputs : dict[name -> numeric or ADVar]  # wrapped as ADVar(requires_grad=True)
+    sparse : bool, default False
+        If True, return a dict with keys as frozenset({i}) or frozenset({i,j}).
+        If False, return a dense np.ndarray [n, n] in the order of inputs.keys().
     """
-    from .tape import use_tape
-    from collections import defaultdict
-
     with use_tape():
         # 1) Build graph
         vars_ad = {
@@ -340,141 +340,157 @@ def edge_push_hessian(f, inputs: dict, *, sparse: bool = True):
         if not isinstance(y, ADVar):
             y = ADVar(y, requires_grad=False, name="y")
 
-        # 2) Maps
-        #    - input_col: id(ADVar) -> input column index (preserve inputs.keys() order)
-        #    - node_index: id(node.out) -> tape index
-        input_col = {id(vars_ad[k]): i for i, k in enumerate(inputs.keys())}
-        n_inputs = len(input_col)
-        node_index = {id(nd.out): i for i, nd in enumerate(global_tape.nodes)}
+        L = len(global_tape.nodes)
+        if L == 0:
+            return {} if sparse else np.zeros((0, 0))
 
-        # Helper: is this ADVar an input leaf (i.e., not produced by any node)?
-        def is_input_leaf(ad):
-            return id(ad) in input_col and id(ad) not in node_index
+        # 2) Indexing maps
+        input_order = list(inputs.keys())
+        input_col = {id(vars_ad[k]): i for i, k in enumerate(input_order)}  # id(leaf) -> col
+        node_index = {id(nd.out): i for i, nd in enumerate(global_tape.nodes)}  # id(out)->idx
+
+        def is_input_id(aid: int) -> bool:
+            # Leaf inputs: appear as a parent but not as any node.out on tape
+            return (aid in input_col) and (aid not in node_index)
 
         # 3) Accumulators
-        vbar = defaultdict(float)           # first-order adjoints on nodes
-        W_var_pairs = defaultdict(float)    # variable-level pair weights: key is frozenset({id(v)} or {id(v),id(u)})
-        W_pairs_input = defaultdict(float)  # final input–input pairs: key is frozenset({i}) or {i,j}
+        vbar = defaultdict(float)         # first‑order adjoints on nodes (indexed by tape idx)
+        W_var_pairs = defaultdict(float)  # variable‑pair masses (ids of ADVars)
 
-        # Seed output node adjoint
-        if len(global_tape.nodes) == 0:
-            return {} if sparse else np.zeros((0, 0))
-        vbar[len(global_tape.nodes) - 1] = 1.0
+        # Seed output adjoint
+        vbar[L - 1] = 1.0
 
-        # Helper: deposit to input Hessian if both endpoints are inputs
-        def try_deposit_to_inputs(pair_key, weight):
-            ids = list(pair_key)
-            if len(ids) == 1:
-                aid = ids[0]
-                if aid in input_col:
-                    W_pairs_input[frozenset({input_col[aid]})] += float(weight)
-                    return True
-                return False
-            else:
-                a, b = ids
-                if a in input_col and b in input_col:
-                    ia, ib = input_col[a], input_col[b]
-                    W_pairs_input[frozenset({ia, ib})] += float(weight)
-                    return True
-                return False
-
-        # 4) Reverse sweep
-        for i in reversed(range(len(global_tape.nodes))):
+        # ---------- Reverse sweep over the tape ----------
+        for i in range(L - 1, -1, -1):
             node = global_tape.nodes[i]
             y_ad = node.out
             y_id = id(y_ad)
-            parents = node.parents  # [(ADVar, local_partial), ...]
+            parents = node.parents  # [(ADVar, ∂y/∂p), ...]
+            m = len(parents)
 
-            # ---------- Pushing ----------
-            # Pull out every pair that currently involves y (either {y} or {y, q})
-            # and push it to y's parents using local Jacobians a_j = ∂y/∂p_j.
+            # ===== (1) Pushing =====
             if W_var_pairs:
+                # Identify all masses currently involving y: {y} or {y,q}
                 touched = [k for k in list(W_var_pairs.keys()) if y_id in k]
                 for pk in touched:
                     w = W_var_pairs.pop(pk)
                     ids = list(pk)
 
                     if len(ids) == 1:
-                        # Case: {y} -- diag pair on y. Push to all parent pairs {p_r, p_s}
-                        # Rule: w_{r,s} += w * (∂y/∂p_r) * (∂y/∂p_s)
-                        m = len(parents)
+                        # Case {y}: push to all unordered parent pairs {p_r,p_s} (r < s)
+                        # and for diagonal we add once (no factor 2 here — matches Algorithm 4)
                         for r in range(m):
-                            pr, a_r = parents[r]
-                            for s in range(r, m):
-                                ps, a_s = parents[s]
-                                new_key = frozenset({id(pr), id(ps)})
-                                contrib = w * a_r * a_s
-                                # If both are inputs, deposit; else keep as variable-level pair
-                                if not try_deposit_to_inputs(new_key, contrib):
-                                    W_var_pairs[new_key] += contrib
+                            p_r, a_r = parents[r]
+                            for s in range(r + 1, m):
+                                p_s, a_s = parents[s]
+                                new_key = frozenset({id(p_r), id(p_s)})
+                                W_var_pairs[new_key] += w * a_r * a_s
+                        # Diagonal (r == s): contributes to singleton {p_r}
+                        for r in range(m):
+                            p_r, a_r = parents[r]
+                            W_var_pairs[frozenset({id(p_r)})] += w * (a_r * a_r)
+
                     else:
-                        # Case: {y, q} with q ≠ y. Push only the y-end:
-                        # Rule: w_{p_r, q} += w * (∂y/∂p_r)
+                        # Case {y, q} with q != y: let q_id be the other endpoint
                         ids.remove(y_id)
                         q_id = ids[0]
-                        m = len(parents)
                         for r in range(m):
-                            pr, a_r = parents[r]
-                            new_key = frozenset({id(pr), q_id})
-                            contrib = w * a_r
-                            if not try_deposit_to_inputs(new_key, contrib):
-                                W_var_pairs[new_key] += contrib
+                            p_r, a_r = parents[r]
+                            if id(p_r) == q_id:
+                                # Special j == p case in the paper: factor 2 to singleton {p}
+                                W_var_pairs[frozenset({q_id})] += 2.0 * w * a_r
+                            else:
+                                # General j ≠ p: new unordered pair {j, p}
+                                new_key = frozenset({id(p_r), q_id})
+                                W_var_pairs[new_key] += w * a_r
 
-            # ---------- Creating ----------
-            # Add variable-level pairs from local second derivatives: vbar[i] * ∂²φ_i
-            if vbar[i] != 0.0:
-                sec = _second_locals(node)  # ("diag", u), ("cross", (u,v))
+            # ===== (2) Creating =====
+            vb = vbar[i]
+            if vb != 0.0:
+                sec = _second_locals(node)
                 if sec:
-                    # Diagonal terms
-                    for u, (p_ad, _a) in enumerate(parents):
-                        key = ("diag", u)
-                        if key in sec:
-                            w = float(sec[key] * vbar[i])
-                            new_key = frozenset({id(p_ad)})
-                            if not try_deposit_to_inputs(new_key, w):
-                                W_var_pairs[new_key] += w
-                    # Cross terms
-                    m = len(parents)
-                    for u in range(m):
-                        for v in range(u + 1, m):
-                            key = ("cross", (u, v))
-                            if key in sec:
-                                w = float(sec[key] * vbar[i])
-                                pu = parents[u][0]; pv = parents[v][0]
-                                new_key = frozenset({id(pu), id(pv)})
-                                if not try_deposit_to_inputs(new_key, w):
-                                    W_var_pairs[new_key] += w
+                    # Prepare quick lookups by parent position
+                    parent_ids = [id(parents[u][0]) for u in range(m)]
 
-            # ---------- Adjoint (first-order) ----------
+                    def diag_weight_for_pos(u):
+                        # Accept: ("diag", u) or legacy ("diag_node", node_idx_of_parent)
+                        if ("diag", u) in sec:
+                            return sec[("diag", u)]
+                        # Legacy support by node index if present
+                        p_idx = node_index.get(parent_ids[u])
+                        if p_idx is not None and ("diag_node", p_idx) in sec:
+                            return sec[("diag_node", p_idx)]
+                        return None
+
+                    def cross_weight_for_pos(u, v):
+                        key = ("cross", (u, v))
+                        if key in sec:
+                            return sec[key]
+                        # Legacy by node indices (unordered stored with u<v)
+                        pu, pv = node_index.get(parent_ids[u]), node_index.get(parent_ids[v])
+                        if pu is not None and pv is not None:
+                            key_legacy = ("cross", (min(pu, pv), max(pu, pv)))
+                            if key_legacy in sec:
+                                return sec[key_legacy]
+                        return None
+
+                    # Diagonals → singleton {p}
+                    for u in range(m):
+                        d2 = diag_weight_for_pos(u)
+                        if d2 is not None:
+                            W_var_pairs[frozenset({parent_ids[u]})] += float(d2 * vb)
+
+                    # Cross terms → unordered pair {p_u, p_v}
+                    for u in range(m - 1):
+                        for v in range(u + 1, m):
+                            d2 = cross_weight_for_pos(u, v)
+                            if d2 is not None:
+                                key = frozenset({parent_ids[u], parent_ids[v]})
+                                W_var_pairs[key] += float(d2 * vb)
+
+            # ===== (3) Adjoint =====
             if vbar[i] != 0.0:
                 for (p_ad, a) in parents:
                     p_idx = node_index.get(id(p_ad))
                     if p_idx is not None:
                         vbar[p_idx] += vbar[i] * a
 
-        # 5) Any remaining variable-level pairs that are already inputs? deposit them.
-        if W_var_pairs:
-            for pk, w in list(W_var_pairs.items()):
-                if try_deposit_to_inputs(pk, w):
-                    W_var_pairs.pop(pk, None)
-
-        # 6) Assemble output
+        # ===== (4) Projection: H = P W Pᵀ =====
+        n = len(inputs)
         if sparse:
-            return W_pairs_input
-        else:
-            H = np.zeros((n_inputs, n_inputs), dtype=float)
-            for pair, val in W_pairs_input.items():
-                elems = list(pair)
-                if len(elems) == 1:
-                    i = elems[0]
-                    H[i, i] += val
+            H_sparse = defaultdict(float)
+            for pair_key, w in W_var_pairs.items():
+                ids = list(pair_key)
+                if len(ids) == 1:
+                    aid = ids[0]
+                    if is_input_id(aid):
+                        H_sparse[frozenset({input_col[aid]})] += float(w)
                 else:
-                    i, j = elems
-                    H[i, j] += val
-                    if i != j:
-                        H[j, i] += val
-            return H
+                    a, b = ids
+                    if is_input_id(a) and is_input_id(b):
+                        i, j = input_col[a], input_col[b]
+                        H_sparse[frozenset({min(i, j), max(i, j)})] += float(w)
+            return H_sparse
 
+        # Dense output
+        H = np.zeros((n, n), dtype=float)
+        for pair_key, w in W_var_pairs.items():
+            ids = list(pair_key)
+            if len(ids) == 1:
+                aid = ids[0]
+                if is_input_id(aid):
+                    i = input_col[aid]
+                    H[i, i] += float(w)
+            else:
+                a, b = ids
+                if is_input_id(a) and is_input_id(b):
+                    i, j = input_col[a], input_col[b]
+                    if i == j:
+                        H[i, i] += float(w)
+                    else:
+                        H[i, j] += float(w)
+                        H[j, i] += float(w)
+        return H
 
 def edge_push_pattern(f, inputs: dict):
     """
