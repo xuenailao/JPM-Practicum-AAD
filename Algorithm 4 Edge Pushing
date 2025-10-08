@@ -1,7 +1,6 @@
 import math
-from collections import defaultdict
 from dataclasses import dataclass
-from typing import List, Tuple, Dict, Optional
+from typing import List, Dict, Tuple, Optional
 
 # ----------------------------
 # Node & Tape helpers
@@ -25,7 +24,7 @@ def make_const(tape: List[Node], c: float) -> int:
     return idx
 
 # ----------------------------
-# Forward eval (必须先跑一次)
+# Forward eval
 # ----------------------------
 def forward_eval(tape: List[Node], x_values: Dict[int, float]) -> None:
     for i, nd in enumerate(tape):
@@ -162,15 +161,13 @@ def algorithm4_hessian_and_grad(tape: List[Node], input_indices: List[int], verb
                             j = preds[pj]; k2 = preds[pk]
                             add_w(W, (j, k2), wv * d1[pj] * d1[pk])
                 elif b == i: # Pushing Ha,i; Ha,j += Ha,i*(∂vi/∂vj)
-                    p = a
                     for pj in range(len(preds)):
                         j = preds[pj]
-                        add_w(W, (p, j), wv * d1[pj])
+                        add_w(W, (a, j), wv * d1[pj])
                 elif a == i: # Pushing Hi,b; Hj,b += Hi,b*(∂vi/∂vj)
-                    p = b
                     for pj in range(len(preds)):
                         j = preds[pj]
-                        add_w(W, (j, p), wv * d1[pj])
+                        add_w(W, (j, b), wv * d1[pj])
 
         # Creating
         _, d2 = local_derivatives(i)
@@ -199,151 +196,3 @@ def algorithm4_hessian_and_grad(tape: List[Node], input_indices: List[int], verb
 
     grad = [bar[idx] for idx in input_indices]
     return H, grad
-
-# ----------------------------
-# 构建 Black–Scholes 看涨价格的 Tape
-# 输入顺序：S, K, r, sigma, T
-# ----------------------------
-def build_bs_call_tape():
-    tape: List[Node] = []
-    iS = make_input(tape)
-    iK = make_input(tape)
-    ir = make_input(tape)
-    isig = make_input(tape)
-    iT = make_input(tape)
-
-    c_half = make_const(tape, 0.5)
-    c_one  = make_const(tape, 1.0)
-    c_zero = make_const(tape, 0.0)
-
-    # ln(S/K)
-    S_div_K = add_node(tape, 'div', [iS, iK])
-    ln_S_over_K = add_node(tape, 'log', [S_div_K])
-
-    # (r + 0.5 * sigma^2) * T
-    sig_sq = add_node(tape, 'mul', [isig, isig])
-    half_sig_sq = add_node(tape, 'mul', [c_half, sig_sq])
-    r_plus_half_sig2 = add_node(tape, 'add', [ir, half_sig_sq])
-    term_num = add_node(tape, 'mul', [r_plus_half_sig2, iT])
-
-    # denom = sigma * sqrt(T)
-    sqrtT = add_node(tape, 'sqrt', [iT])
-    denom = add_node(tape, 'mul', [isig, sqrtT])
-
-    # d1, d2
-    num = add_node(tape, 'add', [ln_S_over_K, term_num])
-    d1 = add_node(tape, 'div', [num, denom])
-    sig_sqrtT = add_node(tape, 'mul', [isig, sqrtT])
-    d2 = add_node(tape, 'sub', [d1, sig_sqrtT])
-
-    # price = S*Phi(d1) - K*exp(-rT)*Phi(d2)
-    Phi_d1 = add_node(tape, 'Phi', [d1])
-    term1 = add_node(tape, 'mul', [iS, Phi_d1])
-
-    rT = add_node(tape, 'mul', [ir, iT])
-    neg_rT = add_node(tape, 'neg', [rT])
-    disc = add_node(tape, 'exp', [neg_rT])           # e^{-rT}
-    Phi_d2 = add_node(tape, 'Phi', [d2])
-    term2 = add_node(tape, 'mul', [iK, disc])        # K * e^{-rT}
-    term2 = add_node(tape, 'mul', [term2, Phi_d2])   # K e^{-rT} Φ(d2)
-
-    price = add_node(tape, 'sub', [term1, term2])    # 输出节点
-
-    input_indices = [iS, isig, ir, iT, iK]  # 想要的梯度/海森顺序（S, σ, r, T, K）
-    return tape, input_indices
-
-# ----------------------------
-# 演示：计算 Delta/Gamma/Vega/Vanna/Vomma 并与解析式对比
-# ----------------------------
-if __name__ == "__main__":
-    # 典型参数
-    S = 100.0
-    K = 100.0
-    r = 0.05
-    sigma = 0.20
-    T = 1.0
-
-    tape, input_indices = build_bs_call_tape()
-    x_map = {
-        input_indices[0]: S,      # iS
-        input_indices[1]: sigma,  # isig
-        input_indices[2]: r,      # ir
-        input_indices[3]: T,      # iT
-        input_indices[4]: K,      # iK
-    }
-    # 注意：上面 x_map 的 key 是“输入节点索引”，不是位置 0..4。这里正好 input_indices 顺序就是输入节点顺序，简化了映射。
-
-    forward_eval(tape, x_map)
-    H, grad = algorithm4_hessian_and_grad(tape, input_indices, verbose=False)
-
-    # 读出 Greeks（按 input_indices 的顺序）
-    # inputs: [S, σ, r, T, K]
-    Delta = grad[0]
-    Vega  = grad[1]
-    Gamma = H[0][0]
-    Vanna = H[0][1]    # ∂^2 V / ∂S∂σ
-    Vomma = H[1][1]    # ∂^2 V / ∂σ^2
-
-    # 解析对比
-    denom = sigma*math.sqrt(T)
-    d1 = (math.log(S/K) + (r + 0.5*sigma*sigma)*T)/denom
-    d2 = d1 - denom
-    pdf = math.exp(-0.5*d1*d1)/math.sqrt(2*math.pi)
-    Delta_ref = 0.5*(1.0 + math.erf(d1/math.sqrt(2.0)))
-    Gamma_ref = pdf/(S*denom)
-    Vega_ref  = S*math.sqrt(T)*pdf
-    # 常用公式：Vomma(Volga) = Vega * d1 * d2 / σ
-    Vomma_ref = Vega_ref * d1 * d2 / sigma
-    # Vanna 常见形式：Vanna = ∂^2V/∂S∂σ = Vega/S * (1 - d1/(σ√T))
-    Vanna_ref = (Vega_ref/S) * (1.0 - d1/denom)
-
-    print("Edge Pushing：")
-    print(f"  Delta = {Delta:.8f}")
-    print(f"  Gamma = {Gamma:.8f}")
-    print(f"  Vega  = {Vega:.8f}")
-    print(f"  Vanna = {Vanna:.8f}")
-    print(f"  Vomma = {Vomma:.8f}")
-
-    print("\nNumeric：")
-    print(f"  Delta_ref = {Delta:.8f}")
-    print(f"  Gamma_ref = {Gamma_ref:.8f}")
-    print(f"  Vega_ref  = {Vega_ref:.8f}")
-    print(f"  Vanna_ref = {Vanna_ref:.8f}")
-    print(f"  Vomma_ref = {Vomma_ref:.8f}")
-    
-
-    print('\nAbs diff (Alg4 - Numeric):')
-    print([float(f'{abs(Delta-Delta_ref):.3e}')])
-    print([float(f'{abs(Gamma-Gamma_ref):.3e}')])
-    print([float(f'{abs(Vega-Vega_ref):.3e}')])
-    print([float(f'{abs(Vanna-Vanna_ref):.3e}')])
-    print([float(f'{abs(Vomma-Vomma_ref):.3e}')])
-
-
-import numpy as np
-def numeric_hessian(f, x, h=1e-6):
-    x = np.array(x, dtype=float)
-    n = len(x)
-    H = np.zeros((n, n))
-    
-    # Diagonal elements H[i,i]
-    for i in range(n):
-        xp = x.copy(); xp[i] += h
-        xm = x.copy(); xm[i] -= h
-        fph = f(xp)
-        fmh = f(xm)
-        f00 = f(x)
-        H[i, i] = (fph - 2*f00 + fmh) / (h*h)
-    
-    # Off-diagonal elements H[i,j] (i<j), computed using mixed central differences
-    for i in range(n):
-        for j in range(i+1, n):
-            xpp = x.copy(); xpp[i] += h; xpp[j] += h
-            xpm = x.copy(); xpm[i] += h; xpm[j] -= h
-            xmp = x.copy(); xmp[i] -= h; xmp[j] += h
-            xmm = x.copy(); xmm[i] -= h; xmm[j] -= h
-            val = (f(xpp) - f(xpm) - f(xmp) + f(xmm)) / (4*h*h)
-            H[i, j] = val
-            H[j, i] = val  # Symmetric
-    
-    return H
