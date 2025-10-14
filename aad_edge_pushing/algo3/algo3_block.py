@@ -225,17 +225,46 @@ def _compute_second_derivatives(node: Node, var_to_idx: Dict[int, int]) -> Dict[
         parent1 = node.parents[1][0]  # exponent
         idx0 = var_to_idx.get(id(parent0), -1)
         idx1 = var_to_idx.get(id(parent1), -1)
-        
+
         if idx0 >= 0:
             x_val = getattr(parent0, 'val', 1.0)
             n_val = getattr(parent1, 'val', 2.0)
-            
+
             # ∂²(x^n)/∂x² = n(n-1)x^(n-2)
             if x_val != 0:
                 d2[(idx0, idx0)] = n_val * (n_val - 1) * (x_val ** (n_val - 2))
-    
-    # For now, we support these basic operations
-    # TODO: Add support for transcendental functions (exp, log, sin, cos, etc.)
+
+    elif node.op_tag == 'exp' and len(node.parents) == 1:
+        # Exponential: f = exp(x)
+        # ∂²exp(x)/∂x² = exp(x)
+        parent0 = node.parents[0][0]
+        idx0 = var_to_idx.get(id(parent0), -1)
+
+        if idx0 >= 0:
+            x_val = getattr(parent0, 'val', 0.0)
+            d2[(idx0, idx0)] = np.exp(x_val)
+
+    elif node.op_tag == 'log' and len(node.parents) == 1:
+        # Logarithm: f = log(x)
+        # ∂²log(x)/∂x² = -1/x²
+        parent0 = node.parents[0][0]
+        idx0 = var_to_idx.get(id(parent0), -1)
+
+        if idx0 >= 0:
+            x_val = getattr(parent0, 'val', 1.0)
+            if x_val > 0:
+                d2[(idx0, idx0)] = -1.0 / (x_val * x_val)
+
+    elif node.op_tag == 'erf' and len(node.parents) == 1:
+        # Error function: f = erf(x)
+        # ∂²erf(x)/∂x² = -(4x/√π) * exp(-x²)
+        parent0 = node.parents[0][0]
+        idx0 = var_to_idx.get(id(parent0), -1)
+
+        if idx0 >= 0:
+            x_val = getattr(parent0, 'val', 0.0)
+            d2[(idx0, idx0)] = -(4.0 * x_val / np.sqrt(np.pi)) * np.exp(-x_val * x_val)
+
     return d2
 
 
