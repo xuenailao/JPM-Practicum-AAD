@@ -1,0 +1,282 @@
+================================================================================
+                     Rho计算快速参考指南
+================================================================================
+
+## 1. 什么是Rho？
+
+Rho = ∂V/∂r (期权价格对利率的一阶导数)
+
+物理意义:
+- Call期权: Rho > 0 (利率↑ → 价格↑)
+- Put期权:  Rho < 0 (利率↑ → 价格↓)
+
+典型数量级: 50-100 (对于ATM期权，S=K=100, T=1年)
+
+================================================================================
+## 2. 解析公式（用于验证）
+
+Call期权:
+    Rho = K · T · exp(-r·T) · Φ(d2)
+
+Put期权:
+    Rho = -K · T · exp(-r·T) · Φ(-d2)
+
+其中:
+    d1 = [ln(S0/K) + (r + 0.5σ²)T] / (σ√T)
+    d2 = d1 - σ√T
+    Φ(·) = 标准正态CDF
+
+================================================================================
+## 3. 数值方法实现
+
+方法1: Bumping (有限差分)
+──────────────────────────
+Rho = [V(r+ε) - V(r-ε)] / (2ε)
+
+代码:
+    from aad_edge_pushing.pde.bumping_method import DoubleBumpingFixed
+
+    bumping = DoubleBumpingFixed(M=51, N=50)
+    result = bumping.compute_greeks(S0, K, T, r, sigma)
+    rho = result['rho']
+
+性能:
+    ✓ 精度: 0.11%误差
+    ✓ 速度: 92ms
+    ✓ PDE求解: 7次
+
+方法2: Double-AAD
+──────────────────────────
+AAD for Hessian + Bumping for Rho
+
+代码:
+    from aad_edge_pushing.pde.double_aad_method import DoubleAADFixed
+
+    double_aad = DoubleAADFixed(M=51, N=50)
+    result = double_aad.compute_greeks(S0, K, T, r, sigma)
+    rho = result['rho']  # + 完整Hessian (vanna, volga)
+
+性能:
+    ✓ 精度: 0.39%误差
+    ✓ 速度: 1036ms
+    ✓ PDE求解: 5次
+
+方法3: Edge-Pushing
+──────────────────────────
+Edge-Pushing for Hessian + Bumping for Rho
+
+代码:
+    from aad_edge_pushing.pde.edge_pushing_method import EdgePushingMethodFixed
+
+    edge_pushing = EdgePushingMethodFixed(M=51, N=50)
+    result = edge_pushing.compute_greeks(
+        S0, K, T, r, sigma, compute_hessian=True
+    )
+    rho = result['rho']  # + 完整Hessian
+
+性能:
+    ✓ 精度: 0.39%误差 (与Double-AAD相同)
+    ✓ 速度: 1179ms
+    ✓ PDE求解: 3次 (最少！)
+
+方法4: BSM解析解 (仅限欧式期权)
+──────────────────────────
+代码:
+    from aad_edge_pushing.pde.bsm_analytical import BSMAnalytical
+
+    analytical = BSMAnalytical()
+    result = analytical.compute_greeks(S0, K, T, r, sigma)
+    rho = result['rho']
+
+性能:
+    ✓ 精度: 机器精度 (0.0000%)
+    ✓ 速度: <1ms
+    ✓ PDE求解: 0次
+
+================================================================================
+## 4. 快速决策树
+
+Q: 需要计算哪些Greeks？
+├─ 仅Delta/Vega/Rho (一阶)
+│  └─> 使用 Bumping (快速 + 准确)
+│
+└─ 需要完整Hessian (vanna, volga)
+   ├─ 追求速度
+   │  └─> 使用 Edge-Pushing (3次PDE)
+   │
+   └─ 追求精度
+      └─> 提高网格 M=101, N=100 + Edge-Pushing
+
+Q: 是否为欧式期权 + 常数σ？
+└─ 是 -> 使用 BSM解析解 (完美精度 + 极快)
+└─ 否 -> 使用数值方法
+
+================================================================================
+## 5. 精度调优
+
+### 提高精度方法1: 增加网格分辨率
+────────────────────────────────
+# 标准配置
+M = 51, N = 50    # Rho误差 ≈ 0.1-0.4%
+
+# 高精度配置
+M = 101, N = 100  # Rho误差 ≈ 0.01-0.05%
+
+# 超高精度配置
+M = 201, N = 200  # Rho误差 ≈ 0.001-0.01%
+
+### 提高精度方法2: 调整bumping步长
+────────────────────────────────
+# 默认步长
+eps_r = 0.0001   # 适用于大多数情况
+
+# 更小步长 (如果PDE精度很高)
+eps_r = 0.00001  # 需要M≥101
+
+# 更大步长 (如果PDE精度较低)
+eps_r = 0.001    # M<50时可考虑
+
+### 最优步长估算
+────────────────────────────────
+eps_opt ≈ √(PDE误差)
+       ≈ √(1/M²)
+       ≈ 1/M
+
+示例:
+    M=51  -> eps_opt ≈ 0.0002
+    M=101 -> eps_opt ≈ 0.0001
+    M=201 -> eps_opt ≈ 0.00005
+
+================================================================================
+## 6. 典型应用场景
+
+场景A: Delta对冲组合 (需要Δ, Γ, ν, ρ)
+──────────────────────────────────────
+推荐: Bumping方法
+原因: 速度快, 精度高, 一次计算得到所有一阶Greeks
+
+示例:
+    result = bumping.compute_greeks(S0, K, T, r, sigma)
+    print(f"Delta: {result['delta']:.4f}")
+    print(f"Gamma: {result['gamma']:.6f}")
+    print(f"Vega:  {result['vega']:.4f}")
+    print(f"Rho:   {result['rho']:.4f}")
+
+场景B: Vanna-Volga定价 (需要完整Hessian)
+──────────────────────────────────────
+推荐: Edge-Pushing方法
+原因: 最少PDE求解次数, 完整二阶Greeks
+
+示例:
+    result = edge_pushing.compute_greeks(
+        S0, K, T, r, sigma, compute_hessian=True
+    )
+    hessian = result['hessian']  # [[γ, vanna], [vanna, volga]]
+
+场景C: 实时风险报告 (毫秒级响应)
+──────────────────────────────────────
+推荐: BSM解析解 (如果适用) 或 低分辨率Bumping
+原因: 极快速度
+
+示例:
+    # 欧式期权
+    result = analytical.compute_greeks(S0, K, T, r, sigma)
+
+    # 其他情况
+    bumping_fast = DoubleBumpingFixed(M=31, N=30)
+    result = bumping_fast.compute_greeks(S0, K, T, r, sigma)
+
+场景D: 研究/回测 (追求极高精度)
+──────────────────────────────────────
+推荐: 高分辨率网格 + Richardson外推
+原因: 可达到<0.01%误差
+
+示例:
+    bumping_hd = DoubleBumpingFixed(M=201, N=200)
+    result = bumping_hd.compute_greeks(
+        S0, K, T, r, sigma, eps_r=0.00001
+    )
+
+================================================================================
+## 7. 误差分析
+
+测试案例: S0=100, K=100, T=1.0, r=0.05, σ=0.2
+解析Rho = 53.23248155
+
+方法对比:
+┌─────────────────┬──────────────┬───────────┬──────────┬────────────┐
+│ 方法            │ Rho值        │ 误差%     │ 时间(ms) │ PDE求解    │
+├─────────────────┼──────────────┼───────────┼──────────┼────────────┤
+│ BSM解析解       │ 53.23248155  │  0.0000   │    0.59  │     0      │
+│ Bumping         │ 53.17406938  │  0.1097   │   92.40  │     7      │
+│ Double-AAD      │ 53.02715041  │  0.3857   │ 1035.72  │     5      │
+│ Edge-Pushing    │ 53.02715041  │  0.3857   │ 1179.49  │     3      │
+└─────────────────┴──────────────┴───────────┴──────────┴────────────┘
+
+关键洞察:
+1. Bumping最准确 (0.11%)
+2. AAD方法误差相同 (因为都用bumping计算Rho)
+3. 所有方法绝对误差<0.21 (对于Rho≈53)
+
+================================================================================
+## 8. 常见问题
+
+Q1: 为什么AAD方法的Rho不如Bumping准确？
+A: 因为AAD构建计算图时会累积舍入误差，影响最终的bumping计算。
+   Bumping直接在原始PDE上操作，避免了这个问题。
+
+Q2: 为什么Double-AAD和Edge-Pushing的Rho完全相同？
+A: 因为它们使用相同的bumping实现和参数：
+   - 相同的eps_r = 0.0001
+   - 相同的PDE求解器
+   - 相同的有限差分公式
+
+Q3: 如何选择eps_r？
+A: 使用公式 eps_r ≈ 1/M
+   - M=51:  eps_r = 0.0002
+   - M=101: eps_r = 0.0001 ← 默认值
+   - M=201: eps_r = 0.00005
+
+Q4: Rho的精度要求是否低于Delta/Gamma？
+A: 是的，原因：
+   - 利率变化慢（以月为单位），Delta需实时对冲（以秒为单位）
+   - Rho通常不需要高频对冲
+   - 0.5%的Rho误差在实际中完全可接受
+
+Q5: 能否将r也加入AAD图，避免bumping？
+A: 可以，但需要重构：
+   - r出现在PDE系数和边界条件中
+   - 需要将整个PDE求解器改为ADVar表达
+   - 实现复杂，收益有限（Rho对冲需求不高）
+
+================================================================================
+## 9. 测试命令
+
+# 快速测试
+python test_rho_all_methods.py quick
+
+# 完整测试 (8个参数组合)
+python test_rho_all_methods.py
+
+# 运行单个方法测试
+python -c "
+from aad_edge_pushing.pde.bumping_method import DoubleBumpingFixed
+bumping = DoubleBumpingFixed(M=51, N=50)
+result = bumping.compute_greeks(100, 100, 1.0, 0.05, 0.2)
+print(f'Rho = {result[\"rho\"]:.6f}')
+"
+
+================================================================================
+## 10. 相关文档
+
+详细文档: RHO_IMPLEMENTATION_SUMMARY.md
+测试脚本: test_rho_all_methods.py
+
+其他Greeks分析:
+- VANNA_VOLGA_ACCURACY_ANALYSIS.md (二阶Greeks精度分析)
+- SUMMARY_VANNA_VOLGA_ANALYSIS.md (Vanna/Volga总结)
+- RELATIVE_ERROR_TRAP_EXPLAINED.txt (相对误差陷阱)
+
+================================================================================
+                            快速参考结束
+================================================================================

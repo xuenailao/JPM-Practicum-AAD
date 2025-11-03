@@ -1,0 +1,78 @@
+================================================================================
+VANNA & VOLGA DEBUG ANALYSIS
+================================================================================
+
+Parameters:
+  S0=100.0, K=100.0, T=1.0, r=0.05, σ=0.2
+  Grid: M=10, N=10 (81 parameters)
+
+BSM Analytical Greeks (Ground Truth):
+  Price: 10.450584
+  Delta: 0.636831
+  Gamma: 0.018762
+  Vega:  37.524035
+  Vanna: -2.814303e-01
+  Volga: 9.850059e+00
+
+Initializing PDE solver...
+Computing Hessian...
+
+================================================================================
+OPTIMIZED TRUE SECOND-ORDER AD (Algorithm 4 Structure)
+================================================================================
+
+Grid: 11×11
+Focus region: all
+Parameters: 90
+
+Phase 1: Forward and first backward passes...
+  Time: 1.52 ms
+
+Phase 2: Building neighbor dependency graph...
+  Unique neighbors to compute: 90
+  Sharing ratio: 6.00×
+  Time: 1.76 ms
+
+Phase 3: Computing tangents and adjoints for 90 unique parameters...
+  Progress: 0/90 (0.0%)
+  Progress: 9/90 (10.0%)
+  Progress: 18/90 (20.0%)
+  Progress: 27/90 (30.0%)
+  Progress: 36/90 (40.0%)
+  Progress: 45/90 (50.0%)
+  Progress: 54/90 (60.0%)
+  Progress: 63/90 (70.0%)
+  Progress: 72/90 (80.0%)
+  Progress: 81/90 (90.0%)
+  Time: 70.69 ms
+
+Phase 4: Assembling Hessian from cached tangents/adjoints...
+  Progress: 0/90 (0.0%)
+  Progress: 9/90 (10.0%)
+  Progress: 18/90 (20.0%)
+  Progress: 27/90 (30.0%)
+  Progress: 36/90 (40.0%)
+  Progress: 45/90 (50.0%)
+  Progress: 54/90 (60.0%)
+  Progress: 63/90 (70.0%)
+  Progress: 72/90 (80.0%)
+  Progress: 81/90 (90.0%)
+
+✓ Optimized Hessian complete:
+  Total time: 89.37 ms
+    Phase 1 (Forward/Backward): 1.52 ms
+    Phase 2 (Neighbor graph): 1.76 ms
+    Phase 3 (Tangent/Adjoint): 70.69 ms
+    Phase 4 (Assembly): 15.31 ms
+  Unique neighbors: 90 (vs 90 parameters)
+  Cache efficiency: 6.00× reuse
+  Non-zero entries: 1,605 / 8,100
+  Sparsity: 80.2%
+  Theoretical speedup: 5.0× 🚀
+Traceback (most recent call last):
+  File "/home/junruw2/AAD/debug_vanna_volga.py", line 444, in <module>
+    main()
+  File "/home/junruw2/AAD/debug_vanna_volga.py", line 386, in main
+    hessian[idx_i, idx_j] = val
+    ~~~~~~~^^^^^^^^^^^^^^
+IndexError: index 82 is out of bounds for axis 1 with size 81

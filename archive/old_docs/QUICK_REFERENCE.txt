@@ -1,0 +1,233 @@
+╔═══════════════════════════════════════════════════════════════════════════════╗
+║                   AAD EDGE-PUSHING PDE GREEKS                                 ║
+║                        QUICK REFERENCE CARD                                   ║
+╚═══════════════════════════════════════════════════════════════════════════════╝
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+ QUICK START
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Complete Benchmark (All 4 Methods):
+  $ python aad_edge_pushing/pde/benchmark_complete.py
+
+Test Individual Methods:
+  $ python aad_edge_pushing/pde/method_1_analytical.py
+  $ python aad_edge_pushing/pde/method_2_bumping_fixed.py
+  $ python aad_edge_pushing/pde/method_3_double_aad_fixed.py
+  $ python aad_edge_pushing/pde/method_4_edge_pushing_fixed.py
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+ OUTPUT FORMAT
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Pure Numerical Values (No Text):
+
+  Method 1: BSM Analytical
+  --------------------------------------------------------------------------------
+  Price  = 10.4505835722
+  Delta  = 0.6368306512
+  Vega   = 38.2924102448
+  Gamma  = 0.0187620173
+  Vanna  = -0.1149050691
+  Volga  = 76.1359636169
+  Time   = 0.080034 ms
+  PDE    = 0
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+ FOUR METHODS EXPLAINED
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+┌────────────────────┬──────────────┬──────────────┬────────────┬────────────┐
+│     Method         │  PDE Solves  │  Jacobian    │  Hessian   │  Accuracy  │
+├────────────────────┼──────────────┼──────────────┼────────────┼────────────┤
+│ 1. Analytical      │      0       │   0.08 ms    │  0.08 ms   │  Machine   │
+│ 2. Bumping (Fixed) │      5       │   95 ms      │  95 ms     │  5-12%     │
+│ 3. Double AAD      │      3       │   85 ms      │  85 ms     │  5-12%     │
+│ 4. Edge-Pushing    │      1       │   72 ms      │  200+ ms*  │  5-12%     │
+└────────────────────┴──────────────┴──────────────┴────────────┴────────────┘
+
+* Hessian expensive on large grids; fast for Jacobian only
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+ KEY INSIGHT: GAMMA = 0 PROBLEM (SOLVED)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Problem:
+  Linear interpolation has zero second derivative
+  price = (1-w) × V[i] + w × V[i+1]
+  ∂²price/∂S² = 0  ❌
+
+Solution:
+  Use grid-based finite difference
+  gamma = [V[i+1] - 2×V[i] + V[i-1]] / dS²  ✅
+
+Why it works:
+  V_grid = [V(S=0), V(S=50), V(S=100), ...]
+  Different indices = different S values
+  Grid FD captures ∂²V/∂S² correctly
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+ GREEKS COMPUTED
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+First-Order (Jacobian):
+  Delta  = ∂V/∂S      (Price sensitivity to stock)
+  Vega   = ∂V/∂σ      (Price sensitivity to volatility)
+
+Second-Order (Hessian):
+  Gamma  = ∂²V/∂S²    (Delta sensitivity to stock)
+  Vanna  = ∂²V/∂S∂σ   (Delta sensitivity to volatility)
+  Volga  = ∂²V/∂σ²    (Vega sensitivity to volatility)
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+ HYBRID METHOD (METHODS 3 & 4)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Strategy: Use best tool for each task
+
+  Parameter Derivatives (σ):
+    - Vega  → AAD backward pass  ✅
+    - Volga → Edge-Pushing       ✅
+
+  Spatial Derivatives (S):
+    - Delta → Grid FD            ✅
+    - Gamma → Grid FD            ✅
+
+  Mixed Derivative (S, σ):
+    - Vanna → FD on Delta        ✅
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+ THEORY VS PRACTICE
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Theory (Black-Box Function):
+  All inputs [S, K, σ, r, T] are ADVars
+  Edge-Pushing computes full 5×5 Hessian
+  Γ = H[0,0]  ✅
+
+PDE Practice (Fixed Grid):
+  Only σ is ADVar
+  S not in computation graph (used only for interpolation)
+  Edge-Pushing computes 1×1 Hessian (only ∂²V/∂σ²)
+  Γ computed via grid FD  ✅
+
+Both are CORRECT for their respective contexts!
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+ PROJECT FILES
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Core Implementation:
+  aad_edge_pushing/pde/method_1_analytical.py
+  aad_edge_pushing/pde/method_2_bumping_fixed.py
+  aad_edge_pushing/pde/method_3_double_aad_fixed.py
+  aad_edge_pushing/pde/method_4_edge_pushing_fixed.py
+  aad_edge_pushing/pde/simple_pde_solver.py
+  aad_edge_pushing/pde/original_pde_aad_hessian_fixed.py
+
+Benchmarks:
+  aad_edge_pushing/pde/benchmark_complete.py
+
+Algorithms:
+  aad_edge_pushing/algo3/algo4_edge_pushing.py
+
+Documentation:
+  COMPLETE_PROJECT_GUIDE.md              (Complete guide)
+  EDGE_PUSHING_GAMMA_EXPLAINED.md        (Technical explanation)
+  EDGE_PUSHING_THEORY_VS_PRACTICE.md     (Theory reconciliation)
+  THEORY_VS_PRACTICE_DIAGRAM.txt         (ASCII diagrams)
+  QUICK_REFERENCE.txt                    (This file)
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+ TYPICAL RESULTS (M=50, N=150)
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Analytical Gamma:  0.0187620173  (baseline)
+
+Bumping    Gamma:  0.0177606665  (5.3% error)   ✅
+Double AAD Gamma:  0.0177606665  (5.3% error)   ✅
+Edge-Push  Gamma:  0.0165336643  (11.9% error)  ✅
+
+All methods successfully compute non-zero Gamma after fix!
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+ GRID CONFIGURATIONS
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Small Grid (Fast):
+  M = 20 spatial steps
+  N = 60 time steps
+  Time: ~85 ms
+  Accuracy: ~12% error
+
+Large Grid (Accurate):
+  M = 50 spatial steps
+  N = 150 time steps
+  Time: ~285 ms
+  Accuracy: ~5% error
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+ DEFAULT PARAMETERS
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+S0    = 100.0   (Initial stock price)
+K     = 100.0   (Strike price - ATM option)
+T     = 1.0     (Time to maturity in years)
+r     = 0.05    (Risk-free rate: 5%)
+sigma = 0.2     (Volatility: 20%)
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+ TROUBLESHOOTING
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Gamma = 0:
+  → Check if using FIXED version of methods
+  → Original versions have interpolation bug
+  → Use: method_2_bumping_fixed.py (not method_2_bumping.py)
+
+Import errors:
+  → Ensure working directory is /home/junruw2/AAD
+  → Check sys.path includes parent directories
+
+Numerical instability:
+  → Increase grid resolution (M, N)
+  → Check adaptive time stepping activates
+  → Verify boundary conditions
+
+Slow performance:
+  → Use smaller grid for testing (M=20, N=60)
+  → Disable Hessian computation for large grids
+  → Edge-Pushing Jacobian-only is fast
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+ KEY MATHEMATICAL FORMULAS
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Black-Scholes PDE:
+  ∂V/∂t + (1/2)σ²S²∂²V/∂S² + rS∂V/∂S - rV = 0
+
+Central Difference (Delta):
+  ∂V/∂S ≈ [V(S+h) - V(S-h)] / (2h)
+
+Three-Point Stencil (Gamma):
+  ∂²V/∂S² ≈ [V(S+h) - 2V(S) + V(S-h)] / h²
+
+Finite Difference (Vanna):
+  ∂²V/∂S∂σ ≈ [Delta(σ+ε) - Delta(σ-ε)] / (2ε)
+
+
+╔═══════════════════════════════════════════════════════════════════════════════╗
+║  For complete details, see COMPLETE_PROJECT_GUIDE.md                         ║
+╚═══════════════════════════════════════════════════════════════════════════════╝

@@ -42,3 +42,6 @@ htmlcov/
 
 # Claude
 .claude/
+
+# Benchmark results
+benchmark_results/

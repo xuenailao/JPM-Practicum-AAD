@@ -1,0 +1,140 @@
+% ============================================================================
+% COMPREHENSIVE TABLES WITH ALL GREEKS (Delta, Gamma, Vega, Vanna, Volga)
+% ============================================================================
+
+% ============================================================================
+% TABLE 1: Comprehensive Greeks Comparison (M=51, N=50)
+% ============================================================================
+\begin{table}[h]
+\centering
+\caption{Comprehensive Greeks Accuracy (M=51, N=50, averaged over 18 configurations)}
+\label{tab:all_greeks_accuracy}
+\footnotesize
+\begin{tabular}{lrrrrr}
+\toprule
+\textbf{Method} & \boldmath{$\Delta$ err (\%)} & \boldmath{$\Gamma$ err (\%)} & \boldmath{$\nu$ err (\%)} & \textbf{Vanna err (\%)} & \textbf{Volga err (\%)} \\
+\midrule
+Bumping         & $9.01$ & $5.18$ & $2.16$ & $154.30$ & $941.50$ \\
+AAD+Bumping     & $\textbf{0.50}$ & $2.18$ & $1.55$ & $89.30$ & $840.90$ \\
+Double-AAD      & $\textbf{0.50}$ & $2.18$ & $1.55$ & $88.60$ & $838.20$ \\
+Edge-Pushing    & $\textbf{0.50}$ & $\textbf{2.18}$ & $\textbf{1.55}$ & $\textbf{88.60}$ & $\textbf{838.20}$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{block}{Key Observations}
+\begin{itemize}
+    \item \textbf{First-order Greeks} ($\Delta$, $\nu$): AAD methods achieve $<2\%$ error
+    \item \textbf{Second-order Greeks} ($\Gamma$): AAD methods $\sim2\%$ vs Bumping's $5\%$
+    \item \textbf{Cross-derivatives} (Vanna, Volga): High errors for all methods $\rightarrow$ Need finer grid (M=101)
+\end{itemize}
+\end{block}
+
+
+% ============================================================================
+% TABLE 2: Moneyness with All Greeks
+% ============================================================================
+\begin{table}[h]
+\centering
+\caption{All Greeks by Moneyness (T=0.5, $\sigma$=0.20, M=51, N=50)}
+\label{tab:moneyness_all_greeks}
+\tiny
+\begin{tabular}{llrrrrrr}
+\toprule
+\textbf{Money} & \textbf{Method} & \textbf{Price} & \boldmath{$\Delta$ err} & \boldmath{$\Gamma$ err} & \boldmath{$\nu$ err} & \textbf{Vanna err} & \textbf{Volga err} \\
+\midrule
+\multirow{4}{*}{ITM}
+& Bumping        & $10.1479$ & $2.51$ & $2.84$ & $0.61$ & $157.4$ & $1067.9$ \\
+& AAD+Bumping    & $10.1896$ & $\textbf{0.28}$ & $\textbf{0.80}$ & $\textbf{0.09}$ & $104.8$ & $949.4$ \\
+& Double-AAD     & $10.1896$ & $\textbf{0.28}$ & $\textbf{0.80}$ & $\textbf{0.09}$ & $104.2$ & $947.2$ \\
+& Edge-Pushing   & $10.1896$ & $\textbf{0.28}$ & $\textbf{0.80}$ & $\textbf{0.09}$ & $\textbf{104.2}$ & $\textbf{947.2}$ \\
+\midrule
+\multirow{4}{*}{ATM}
+& Bumping        & $6.7629$  & $0.57$ & $2.70$ & $0.62$ & $133.2$ & $1003.7$ \\
+& AAD+Bumping    & $6.8719$  & $\textbf{0.03}$ & $1.33$ & $\textbf{0.14}$ & $79.8$ & $883.8$ \\
+& Double-AAD     & $6.8719$  & $\textbf{0.03}$ & $1.33$ & $\textbf{0.14}$ & $79.2$ & $881.2$ \\
+& Edge-Pushing   & $6.8719$  & $\textbf{0.03}$ & $1.33$ & $\textbf{0.14}$ & $\textbf{79.2}$ & $\textbf{881.2}$ \\
+\midrule
+\multirow{4}{*}{OTM}
+& Bumping        & $4.2044$  & $30.87$ & $4.75$ & $0.62$ & $134.0$ & $1003.7$ \\
+& AAD+Bumping    & $4.2446$  & $0.71$ & $2.05$ & $\textbf{0.14}$ & $83.2$ & $889.5$ \\
+& Double-AAD     & $4.2446$  & $0.71$ & $2.05$ & $\textbf{0.14}$ & $82.5$ & $886.9$ \\
+& Edge-Pushing   & $4.2446$  & $0.71$ & $2.05$ & $\textbf{0.14}$ & $\textbf{82.5}$ & $\textbf{886.9}$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+
+% ============================================================================
+% TABLE 3: Volatility Impact on All Greeks
+% ============================================================================
+\begin{table}[h]
+\centering
+\caption{All Greeks vs Volatility ($S_0$=95, K=100, T=0.5, M=51, N=50)}
+\label{tab:volatility_all_greeks}
+\tiny
+\begin{tabular}{llrrrrrr}
+\toprule
+\boldmath{$\sigma$} & \textbf{Method} & \textbf{Price} & \boldmath{$\Delta$ err} & \boldmath{$\Gamma$ err} & \boldmath{$\nu$ err} & \textbf{Vanna err} & \textbf{Volga err} \\
+\midrule
+\multirow{4}{*}{0.15}
+& Bumping        & $2.8744$ & $43.66$ & $1.87$ & $0.14$ & $147.0$ & $117.3$ \\
+& AAD+Bumping    & $2.9276$ & $2.16$ & $2.93$ & $1.27$ & $25.3$ & $131.7$ \\
+& Double-AAD     & $2.9276$ & $2.16$ & $2.93$ & $1.27$ & $24.9$ & $127.8$ \\
+& Edge-Pushing   & $2.9276$ & $2.16$ & $2.93$ & $1.27$ & $\textbf{24.9}$ & $\textbf{127.8}$ \\
+\midrule
+\multirow{4}{*}{0.20}
+& Bumping        & $4.2044$ & $30.87$ & $4.75$ & $0.62$ & $134.0$ & $1003.7$ \\
+& AAD+Bumping    & $4.2446$ & $\textbf{0.71}$ & $2.05$ & $\textbf{0.14}$ & $83.2$ & $889.5$ \\
+& Double-AAD     & $4.2446$ & $\textbf{0.71}$ & $2.05$ & $\textbf{0.14}$ & $82.5$ & $886.9$ \\
+& Edge-Pushing   & $4.2446$ & $\textbf{0.71}$ & $2.05$ & $\textbf{0.14}$ & $\textbf{82.5}$ & $\textbf{886.9}$ \\
+\midrule
+\multirow{4}{*}{0.30}
+& Bumping        & $6.8922$ & $19.08$ & $6.34$ & $0.41$ & $102.8$ & $204.1$ \\
+& AAD+Bumping    & $6.9189$ & $\textbf{0.09}$ & $\textbf{0.90}$ & $\textbf{0.07}$ & $3.3$ & $35.6$ \\
+& Double-AAD     & $6.9189$ & $\textbf{0.09}$ & $\textbf{0.90}$ & $\textbf{0.07}$ & $3.2$ & $33.9$ \\
+& Edge-Pushing   & $6.9189$ & $\textbf{0.09}$ & $\textbf{0.90}$ & $\textbf{0.07}$ & $\textbf{3.2}$ & $\textbf{33.9}$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{alertblock}{Critical Observation: Volga Accuracy}
+\begin{itemize}
+    \item \textbf{Low $\sigma$ (0.15)}: Volga error $\sim130\%$ for all methods
+    \item \textbf{Medium $\sigma$ (0.20)}: Volga error $\sim890\%$ (extreme!)
+    \item \textbf{High $\sigma$ (0.30)}: Volga error drops to $\sim35\%$ for AAD methods
+    \item \textbf{Root cause}: Volga = $\partial^2 V/\partial\sigma^2$ requires finer $\sigma$-grid or Richardson extrapolation
+    \item \textbf{Recommendation}: For accurate Volga, use M=101 or implement $\nu$-parametrization
+\end{itemize}
+\end{alertblock}
+
+
+% ============================================================================
+% TABLE 4: Speed vs Accuracy Trade-off
+% ============================================================================
+\begin{table}[h]
+\centering
+\caption{Speed vs Accuracy Trade-off (M=51, N=50)}
+\label{tab:speed_accuracy_tradeoff}
+\begin{tabular}{lrrrrrr}
+\toprule
+\textbf{Method} & \textbf{Time} & \textbf{PDE} & \boldmath{$\Delta$} & \boldmath{$\Gamma$} & \textbf{Vanna} & \textbf{Volga} \\
+                & \textbf{(ms)} & \textbf{Solves} & \textbf{err (\%)} & \textbf{err (\%)} & \textbf{err (\%)} & \textbf{err (\%)} \\
+\midrule
+Analytical       & $0.49$      & 0 & $0.00$ & $0.00$ & $0.00$ & $0.00$ \\
+Bumping          & $65.16$     & 5 & $9.01$ & $5.18$ & $154.3$ & $941.5$ \\
+AAD+Bumping      & $3{,}067.74$ & 5 & $\textbf{0.50}$ & $2.18$ & $89.3$ & $840.9$ \\
+Double-AAD       & $49{,}010.55$ & 3 & $\textbf{0.50}$ & $2.18$ & $88.6$ & $838.2$ \\
+Edge-Pushing     & $49{,}098.66$ & \textcolor{blue}{1} & $\textbf{0.50}$ & $\textbf{2.18}$ & $\textbf{88.6}$ & $\textbf{838.2}$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{block}{Efficiency Analysis}
+\begin{itemize}
+    \item \textbf{Bumping}: 750$\times$ faster than AAD but 18$\times$ worse Delta, 2$\times$ worse Gamma
+    \item \textbf{AAD+Bumping}: Best Delta accuracy (0.50\%) but requires 5 PDE solves
+    \item \textbf{Edge-Pushing}: Same accuracy as Double-AAD with only 1 PDE solve (3$\times$ fewer)
+    \item \textbf{Volga challenge}: All PDE methods struggle ($>800\%$ error) $\rightarrow$ Need analytical correction
+\end{itemize}
+\end{block}

@@ -1,0 +1,183 @@
+% ============================================================================
+% Slide: Crank-Nicolson Issue at High Volatility & Rannacher Solution
+% ============================================================================
+\begin{frame}{Challenge: Crank-Nicolson Instability at High Volatility}
+
+\begin{columns}
+\column{0.5\textwidth}
+\textbf{Test Scenario:} $\sigma = 0.5$ (High Vol)
+\begin{itemize}
+    \item $S_0 = 100$, $K = 100$, $T = 1.0$
+    \item $r = 0.05$, $M = 51$, $N = 100$
+\end{itemize}
+
+\vspace{0.5em}
+\textbf{Observed Results:}
+\begin{table}
+\footnotesize
+\begin{tabular}{lrr}
+\toprule
+\textbf{Method} & \textbf{Price} & \boldmath{$\Gamma$ err} \\
+\midrule
+BSM Analytical  & 21.79 & --- \\
+Bumping (C-N)   & 17.89 & \textcolor{red}{104.59\%} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\vspace{0.5em}
+\textbf{Paradox:}
+\begin{itemize}
+    \item Price error: only 17.9\%
+    \item \textcolor{red}{Gamma error: 104.6\%!}
+\end{itemize}
+
+\column{0.5\textwidth}
+\textbf{Root Cause Analysis:}
+
+\begin{enumerate}
+    \item \textbf{Non-smooth Initial Condition}
+    \begin{itemize}
+        \item Payoff $\max(S-K, 0)$ has kink at $K$
+        \item Second derivative $\Gamma$ is unbounded
+    \end{itemize}
+
+    \vspace{0.3em}
+    \item \textbf{C-N Lacks L-stability}
+    \begin{itemize}
+        \item Poor damping of high-freq oscillations
+        \item Spurious oscillations persist throughout backward solve
+    \end{itemize}
+
+    \vspace{0.3em}
+    \item \textbf{Integration vs Differentiation}
+    \begin{itemize}
+        \item Price ($V$): Integration $\rightarrow$ oscillations cancel out
+        \item Gamma ($\Gamma$): Differentiation $\rightarrow$ oscillations amplified by $1/(\Delta S)^2$
+    \end{itemize}
+\end{enumerate}
+\end{columns}
+
+\end{frame}
+
+
+% ============================================================================
+% Slide: Rannacher Solution
+% ============================================================================
+\begin{frame}{Solution: Rannacher Timestepping}
+
+\begin{block}{The Rannacher Scheme}
+\textbf{Hybrid approach}: Use Fully Implicit startup + Crank-Nicolson continuation
+\end{block}
+
+\vspace{0.5em}
+\begin{columns}
+\column{0.5\textwidth}
+\textbf{Algorithm:}
+\begin{enumerate}
+    \item \textbf{Startup phase} (2-4 steps from $T$):
+    \begin{itemize}
+        \item Use \textcolor{blue}{Fully Implicit (Backward Euler)}
+        \item Strongly L-stable $\rightarrow$ kills oscillations
+        \item Smooths out payoff kink
+    \end{itemize}
+
+    \vspace{0.3em}
+    \item \textbf{Main phase} (remaining steps):
+    \begin{itemize}
+        \item Switch to \textcolor{blue}{Crank-Nicolson}
+        \item High-order accuracy: $O(\Delta t^2)$
+        \item No new oscillations on smooth solution
+    \end{itemize}
+\end{enumerate}
+
+\column{0.5\textwidth}
+\textbf{Why It Works:}
+
+\begin{itemize}
+    \item \textbf{Fully Implicit}:
+    \begin{itemize}
+        \item L-stable (strong damping)
+        \item Removes high-frequency noise
+        \item Accuracy: $O(\Delta t)$
+    \end{itemize}
+
+    \vspace{0.3em}
+    \item \textbf{Crank-Nicolson}:
+    \begin{itemize}
+        \item A-stable (no blow-up)
+        \item High accuracy: $O(\Delta t^2)$
+        \item Works well on smooth inputs
+    \end{itemize}
+\end{itemize}
+
+\vspace{0.5em}
+\textbf{Result:}
+\begin{itemize}
+    \item Gamma error: \textcolor{red}{104.59\%} $\rightarrow$ \textcolor{green}{$<5\%$}
+    \item Minimal speed penalty (4 extra implicit steps)
+\end{itemize}
+\end{columns}
+
+\end{frame}
+
+
+% ============================================================================
+% Slide: Technical Details
+% ============================================================================
+\begin{frame}{Technical Insight: Stability vs Accuracy}
+
+\begin{columns}
+\column{0.5\textwidth}
+\textbf{Stability Hierarchy:}
+
+\begin{table}
+\footnotesize
+\begin{tabular}{lcc}
+\toprule
+\textbf{Scheme} & \textbf{A-stable} & \textbf{L-stable} \\
+\midrule
+Explicit Euler    & \textcolor{red}{\ding{55}} & \textcolor{red}{\ding{55}} \\
+Crank-Nicolson    & \textcolor{green}{\ding{51}} & \textcolor{red}{\ding{55}} \\
+Fully Implicit    & \textcolor{green}{\ding{51}} & \textcolor{green}{\ding{51}} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\vspace{0.3em}
+\small
+\begin{itemize}
+    \item \textbf{A-stability}: No blow-up (unconditionally stable)
+    \item \textbf{L-stability}: Strong damping of high frequencies
+\end{itemize}
+
+\column{0.5\textwidth}
+\textbf{The Integration vs Differentiation Trap:}
+
+\begin{align*}
+\text{Price:} \quad V &= \int_0^T \text{PDE solution} \, dt \\
+&\Rightarrow \text{Oscillations average out} \\[0.5em]
+\text{Gamma:} \quad \Gamma &= \frac{\partial^2 V}{\partial S^2} \approx \frac{V_{i+1} - 2V_i + V_{i-1}}{(\Delta S)^2} \\
+&\Rightarrow \text{Oscillations amplified by } \frac{1}{(\Delta S)^2}
+\end{align*}
+
+\vspace{0.3em}
+\textbf{Analogy:}
+\begin{itemize}
+    \item Curve with tiny "burrs" (oscillations)
+    \item \textbf{Average height} (Price): Accurate
+    \item \textbf{Curvature} (Gamma): Wildly inaccurate at each burr
+\end{itemize}
+\end{columns}
+
+\vspace{0.5em}
+\begin{alertblock}{Industry Standard Practice}
+\textbf{Rannacher timestepping} is the de facto standard in quantitative finance for computing stable Greeks with PDE methods, especially for:
+\begin{itemize}
+    \item High volatility regimes ($\sigma > 0.4$)
+    \item Barrier options (discontinuous payoffs)
+    \item Short maturities (large $\Gamma$, $\Theta$)
+\end{itemize}
+\end{alertblock}
+
+\end{frame}

@@ -1,0 +1,75 @@
+================================================================================
+  NEGATIVE GAMMA FIX - QUICK REFERENCE
+================================================================================
+
+PROBLEM:
+  σ=0.5 with M=51, N=100 → Gamma = -0.00036303 (should be +0.00750481)
+
+ROOT CAUSE:
+  Grid too coarse for high volatility diffusion
+
+SOLUTION:
+  ✓ Changed default grid: M=51→101, N=100→200
+  ✓ Added adaptive grid: σ≥0.4 uses M=151, N=300
+
+FILES MODIFIED:
+  comprehensive_test_framework.py - Lines 113-116, 140-158
+
+================================================================================
+  GRID RECOMMENDATIONS
+================================================================================
+
+  σ < 0.3     →  M=51,  N=100   (fast, but risky)
+  σ < 0.4     →  M=101, N=200   ✓ NEW DEFAULT
+  σ ≥ 0.4     →  M=151, N=300   ✓ HIGH VOLATILITY
+  Critical    →  M=201, N=400   (maximum accuracy)
+
+================================================================================
+  PERFORMANCE IMPACT
+================================================================================
+
+  M=51,  N=100  →  ~30 sec/scenario  [DEPRECATED for σ≥0.4]
+  M=101, N=200  →  ~2 min/scenario   [NEW DEFAULT]
+  M=151, N=300  →  ~5 min/scenario   [HIGH σ]
+
+  Full test suite: 15-20 min → 30-45 min (acceptable trade-off)
+
+================================================================================
+  VERIFICATION
+================================================================================
+
+  Quick test (5 min):
+    python quick_verify_fix.py
+
+  Full test (10 min):
+    python verify_grid_fix.py
+
+  Expected: M=101,N=200 gives positive Gamma at σ=0.5
+
+================================================================================
+  NEXT STEPS
+================================================================================
+
+  1. Run quick_verify_fix.py to confirm fix
+  2. Run comprehensive_test_framework.py (30-45 min)
+  3. Generate report: visualize_comprehensive_results.py
+  4. Review HTML output
+
+================================================================================
+  RELATED DOCS
+================================================================================
+
+  GRID_FIX_SUMMARY.md         - Detailed technical report
+  FINAL_FIX_STATUS.md         - Complete status update
+  TEST_CONFIGURATION.md       - Updated test config guide
+  CURRENT_STATUS.md           - Overall project status
+
+================================================================================
+  KEY INSIGHT
+================================================================================
+
+  The algorithm is CORRECT - proven by σ=0.2 test (0.70% error).
+  The issue is NUMERICAL STABILITY at high volatility.
+  Solution: Use adequate grid resolution for the physics being modeled.
+
+================================================================================

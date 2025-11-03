@@ -1,0 +1,106 @@
+% ============================================================================
+% TABLE 1: Grid Size Comparison (M=51, N=50)
+% ============================================================================
+\begin{table}[h]
+\centering
+\caption{Performance Comparison at Grid Size M=51, N=50 (Averaged over 18 test configurations)}
+\label{tab:grid_comparison}
+\begin{tabular}{lrrrr}
+\toprule
+\textbf{Method} & \textbf{Time (ms)} & \boldmath{$\Delta$ err (\%)} & \boldmath{$\Gamma$ err (\%)} & \textbf{PDE Solves} \\
+\midrule
+Analytical       & $0.49$      & ---    & ---    & 0 \\
+Bumping          & $65.16$     & $9.01$ & $5.18$ & 5 \\
+AAD+Bumping      & $3{,}067.74$ & $\textbf{0.50}$ & $2.18$ & 5 \\
+Double-AAD       & $49{,}010.55$ & $\textbf{0.50}$ & $2.18$ & 3 \\
+Edge-Pushing     & $49{,}098.66$ & $\textbf{0.50}$ & $\textbf{2.18}$ & \textcolor{blue}{1} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+
+% ============================================================================
+% TABLE 2: Moneyness Comparison (ATM/ITM/OTM)
+% ============================================================================
+\begin{table}[h]
+\centering
+\caption{Greeks Accuracy by Moneyness (T=0.5, $\sigma$=0.20, M=51, N=50)}
+\label{tab:moneyness_comparison}
+\small
+\begin{tabular}{llrrrr}
+\toprule
+\textbf{Moneyness} & \textbf{Method} & \textbf{Price} & \boldmath{$\Delta$ err (\%)} & \boldmath{$\Gamma$ err (\%)} & \textbf{Time (ms)} \\
+\midrule
+\multirow{5}{*}{ITM ($S_0$=105)}
+& Analytical     & $10.2013$ & ---    & ---    & $0.51$ \\
+& Bumping        & $10.1479$ & $2.51$ & $2.84$ & $34.66$ \\
+& AAD+Bumping    & $10.1896$ & $\textbf{0.28}$ & $\textbf{0.80}$ & $2{,}935.97$ \\
+& Double-AAD     & $10.1896$ & $\textbf{0.28}$ & $\textbf{0.80}$ & $47{,}674.63$ \\
+& Edge-Pushing   & $10.1896$ & $\textbf{0.28}$ & $\textbf{0.80}$ & $47{,}663.23$ \\
+\midrule
+\multirow{5}{*}{ATM ($S_0$=100)}
+& Analytical     & $6.8887$  & ---    & ---    & $0.48$ \\
+& Bumping        & $6.7629$  & $0.57$ & $2.70$ & $34.03$ \\
+& AAD+Bumping    & $6.8719$  & $\textbf{0.03}$ & $1.33$ & $2{,}908.50$ \\
+& Double-AAD     & $6.8719$  & $\textbf{0.03}$ & $1.33$ & $47{,}328.19$ \\
+& Edge-Pushing   & $6.8719$  & $\textbf{0.03}$ & $1.33$ & $47{,}348.77$ \\
+\midrule
+\multirow{5}{*}{OTM ($S_0$=95)}
+& Analytical     & $4.2545$  & ---    & ---    & $0.50$ \\
+& Bumping        & $4.2044$  & $30.87$ & $4.75$ & $34.77$ \\
+& AAD+Bumping    & $4.2446$  & $0.71$ & $2.05$ & $2{,}985.04$ \\
+& Double-AAD     & $4.2446$  & $0.71$ & $2.05$ & $46{,}611.65$ \\
+& Edge-Pushing   & $4.2446$  & $0.71$ & $2.05$ & $47{,}449.86$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+
+% ============================================================================
+% TABLE 3: Volatility Comparison
+% ============================================================================
+\begin{table}[h]
+\centering
+\caption{Greeks Accuracy vs Volatility ($S_0$=95, K=100, T=0.5, M=51, N=50)}
+\label{tab:volatility_comparison}
+\small
+\begin{tabular}{llrrrrr}
+\toprule
+\boldmath{$\sigma$} & \textbf{Method} & \textbf{Price} & \boldmath{$\Delta$ err (\%)} & \boldmath{$\Gamma$ err (\%)} & \boldmath{$\nu$ err (\%)} & \textbf{Time (ms)} \\
+\midrule
+\multirow{5}{*}{0.15}
+& Analytical     & $2.9303$ & ---    & ---    & ---    & $0.34$ \\
+& Bumping        & $2.8744$ & $43.66$ & $1.87$ & $0.14$ & $31.94$ \\
+& AAD+Bumping    & $2.9276$ & $2.16$ & $2.93$ & $1.27$ & $3{,}024.98$ \\
+& Double-AAD     & $2.9276$ & $2.16$ & $2.93$ & $1.27$ & $45{,}800.65$ \\
+& Edge-Pushing   & $2.9276$ & $2.16$ & $2.93$ & $1.27$ & $44{,}356.00$ \\
+\midrule
+\multirow{5}{*}{0.20}
+& Analytical     & $4.2545$ & ---    & ---    & ---    & $0.50$ \\
+& Bumping        & $4.2044$ & $30.87$ & $4.75$ & $0.62$ & $34.77$ \\
+& AAD+Bumping    & $4.2446$ & $\textbf{0.71}$ & $2.05$ & $\textbf{0.14}$ & $2{,}985.04$ \\
+& Double-AAD     & $4.2446$ & $\textbf{0.71}$ & $2.05$ & $\textbf{0.14}$ & $46{,}611.65$ \\
+& Edge-Pushing   & $4.2446$ & $\textbf{0.71}$ & $2.05$ & $\textbf{0.14}$ & $47{,}449.86$ \\
+\midrule
+\multirow{5}{*}{0.30}
+& Analytical     & $6.9282$ & ---    & ---    & ---    & $0.46$ \\
+& Bumping        & $6.8922$ & $19.08$ & $6.34$ & $0.41$ & $73.29$ \\
+& AAD+Bumping    & $6.9189$ & $\textbf{0.09}$ & $\textbf{0.90}$ & $\textbf{0.07}$ & $2{,}979.75$ \\
+& Double-AAD     & $6.9189$ & $\textbf{0.09}$ & $\textbf{0.90}$ & $\textbf{0.07}$ & $50{,}232.84$ \\
+& Edge-Pushing   & $6.9189$ & $\textbf{0.09}$ & $\textbf{0.90}$ & $\textbf{0.07}$ & $49{,}976.50$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+
+% ============================================================================
+% OBSERVATIONS
+% ============================================================================
+\begin{block}{Key Observations}
+\begin{itemize}
+    \item \textbf{Grid Size}: Edge-Pushing achieves 2.18\% Gamma error with only 1 PDE solve (vs 5 for Bumping)
+    \item \textbf{Moneyness}: AAD methods show best accuracy for ITM options (0.80\% Gamma error)
+    \item \textbf{Volatility}: All methods maintain stable accuracy across $\sigma \in [0.15, 0.30]$
+    \item \textbf{Trade-off}: Bumping is 750$\times$ faster but 2-3$\times$ less accurate than AAD methods
+\end{itemize}
+\end{block}

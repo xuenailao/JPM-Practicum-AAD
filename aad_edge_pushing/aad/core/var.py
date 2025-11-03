@@ -58,3 +58,48 @@ class ADVar:
         # Short label: "req" if requires_grad=True, else "const"
         rg = "req" if self.requires_grad else "const"
         return f"ADVar({self.val!r}, {rg}, name={self.name!r})"
+
+    # Operator overloading for arithmetic operations
+    def __add__(self, other):
+        from ..ops.arithmetic import add
+        return add(self, other)
+
+    def __radd__(self, other):
+        from ..ops.arithmetic import add
+        return add(other, self)
+
+    def __sub__(self, other):
+        from ..ops.arithmetic import sub
+        return sub(self, other)
+
+    def __rsub__(self, other):
+        from ..ops.arithmetic import sub
+        return sub(other, self)
+
+    def __mul__(self, other):
+        from ..ops.arithmetic import mul
+        return mul(self, other)
+
+    def __rmul__(self, other):
+        from ..ops.arithmetic import mul
+        return mul(other, self)
+
+    def __truediv__(self, other):
+        from ..ops.arithmetic import div
+        return div(self, other)
+
+    def __rtruediv__(self, other):
+        from ..ops.arithmetic import div
+        return div(other, self)
+
+    def __neg__(self):
+        from ..ops.arithmetic import neg
+        return neg(self)
+
+    def __pow__(self, other):
+        from ..ops.arithmetic import pow
+        return pow(self, other)
+
+    def __rpow__(self, other):
+        from ..ops.arithmetic import pow
+        return pow(other, self)

@@ -1,0 +1,26 @@
+================================================================================
+HIGH VOLATILITY GAMMA TEST (σ=0.5)
+================================================================================
+
+Parameters: S0=100.0, K=100.0, T=1.0, r=0.05, σ=0.5
+Grid: M=51, N=100
+
+Analytical Gamma: 0.00750481
+
+Computing Hessian (this may take 1-2 minutes)...
+
+Results:
+  Price = 17.921692
+  Delta = 0.427852
+  Gamma = -0.00036303
+  Vega  = -2.140228
+
+  ✗ CRITICAL: Gamma is NEGATIVE!
+    Analytical: 0.00750481 (positive)
+    Computed:   -0.00036303 (negative)
+
+  This is likely due to:
+    1. Grid too coarse for high volatility (M=51, N=100)
+    2. Numerical instability in spline interpolation
+    3. C-N spurious oscillations corrupting Hessian
+
