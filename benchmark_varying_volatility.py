@@ -246,12 +246,11 @@ def main():
     r = 0.05
 
     # Test different volatility levels
-    volatilities = [0.10, 0.20, 0.30, 0.40, 0.50]  # 10%, 20%, 30%, 40%, 50%
+    volatilities = [0.50]  # 10%, 20%, 30%, 40%, 50%
 
     # Grid sizes
     grid_sizes = [
-        (51, 100),    # Coarse
-        (101, 200),   # Fine
+        (201, 400),   # Fine
     ]
 
     # Run benchmark

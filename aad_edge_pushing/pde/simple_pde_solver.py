@@ -19,11 +19,23 @@ class SimplePDESolver:
         self.N_base = N_base
         self.phi = 0.5
 
-        # Adaptive S_max that scales with volatility (fixes high-vol pricing error)
-        S_min = 0.0
-        S_max = max(3.0 * K, S0 * np.exp((r + 3*sigma) * T))
-        self.S_grid = np.linspace(S_min, S_max, M)
-        self.dS = self.S_grid[1] - self.S_grid[0]
+        # Adaptive S_max that scales with volatility
+        # Expanded from 3σ to 5σ to capture full option tail at high volatility
+        S_max = max(5.0 * K, S0 * np.exp((r + 5*sigma) * T))
+
+        # Log-scale grid: x = log(S)
+        # This transforms the PDE to have constant diffusion coefficient 0.5*σ²
+        # avoiding the S² term that causes instability at high S
+        S_min = 1e-3  # Avoid log(0)
+        x_min = np.log(S_min)
+        x_max = np.log(S_max)
+
+        # Uniform grid in log-space
+        self.x_grid = np.linspace(x_min, x_max, M)
+        self.dx = self.x_grid[1] - self.x_grid[0]
+
+        # Convert to S-space for boundary conditions and payoff
+        self.S_grid = np.exp(self.x_grid)
         self.S0_idx = None
 
     def _terminal_condition(self) -> np.ndarray:
@@ -55,9 +67,11 @@ class SimplePDESolver:
 
         M = self.M
         n = M - 2
-        dS = self.dS
+        dx = self.dx
 
-        # Build CN coefficients (numerical)
+        # Build CN coefficients for log-space PDE
+        # In x = log(S) space: ∂V/∂t + (r - 0.5σ²)∂V/∂x + 0.5σ²∂²V/∂x² - rV = 0
+        # Discretized: α∂²V/∂x² + β∂V/∂x + γV
         a_L = np.zeros(n)
         b_L = np.zeros(n)
         c_L = np.zeros(n)
@@ -65,15 +79,20 @@ class SimplePDESolver:
         b_R = np.zeros(n)
         c_R = np.zeros(n)
 
-        for i in range(n):
-            S_i = self.S_grid[i+1]
-            alpha_i = (sigma**2 * S_i**2 / 2.0) / (dS**2)
-            beta_i = (self.r * S_i) / (2.0 * dS)
-            gamma_i = -self.r
+        # Constant coefficients in log-space (independent of x!)
+        alpha = 0.5 * sigma**2 / (dx**2)  # Diffusion (constant!)
+        beta = (self.r - 0.5 * sigma**2) / (2.0 * dx)  # Drift
+        gamma = -self.r  # Discount
 
-            l_i = alpha_i - beta_i
-            c_i = -2.0 * alpha_i + gamma_i
-            u_i = alpha_i + beta_i
+        l = alpha - beta  # Lower diagonal
+        c = -2.0 * alpha + gamma  # Main diagonal
+        u = alpha + beta  # Upper diagonal
+
+        for i in range(n):
+            # Same coefficients for all grid points (uniform in x-space)
+            l_i = l
+            c_i = c
+            u_i = u
 
             phi = self.phi
 

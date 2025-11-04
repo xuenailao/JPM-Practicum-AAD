@@ -87,30 +87,71 @@ class BS_PDE_AAD_Rannacher:
         self.use_rannacher = use_rannacher
         self.rannacher_steps = rannacher_steps
 
-        # Adaptive S_max that scales with volatility
-        # Expanded from 3σ to 5σ to capture full option tail at high volatility
-        S_max = max(5.0 * K, S0 * np.exp((r + 5*sigma) * T))
-
-        # Log-scale grid: x = log(S)
-        S_min = 1e-3
-        x_min = np.log(S_min)
-        x_max = np.log(S_max)
-
-        # Uniform grid in log-space
-        self.x_grid = np.linspace(x_min, x_max, M)
-        self.dx = self.x_grid[1] - self.x_grid[0]
-
-        # Convert to S-space
-        self.S_grid = np.exp(self.x_grid)
-
+        # Spatial grid
         if center_on_S0:
-            # Find closest grid point and adjust to S0
-            self.S0_idx = np.argmin(np.abs(self.S_grid - S0))
-            self.S_grid[self.S0_idx] = S0
-            # Recompute x_grid after adjustment
-            self.x_grid = np.log(self.S_grid)
-            self.dx = self.x_grid[1] - self.x_grid[0]  # Approximately uniform
+            # Build grid centered on S0 to avoid interpolation
+            # Ensure S0 is exactly on a grid point
+            # Adaptive S_max that scales with volatility (fixes high-vol pricing error)
+            S_max = max(3.0 * K, S0 * np.exp((r + 3*sigma) * T))
+            total_span = S_max  # from 0 to S_max
+
+            # Find grid spacing that places S0 on a grid point
+            # We want: S_grid[i] = S0 for some integer i
+            # Try to make S0 be at approximately M//3 from the left
+            # so there's room on both sides
+
+            # Target: have about M//3 points below S0, 2*M//3 above
+            n_below = M // 3
+            n_above = M - n_below - 1  # -1 for the S0 point itself
+
+            # Spacing
+            dS_below = S0 / n_below if n_below > 0 else S0
+            dS_above = (S_max - S0) / n_above if n_above > 0 else (S_max - S0)
+
+            # Use uniform spacing (average of both)
+            self.dS = (dS_below + dS_above) / 2.0
+
+            # Build grid with S0 at index n_below
+            S_min = S0 - n_below * self.dS
+            S_max_actual = S0 + n_above * self.dS
+
+            self.S_grid = np.linspace(S_min, S_max_actual, M)
+
+            # Verify S0 is on grid (should be at index n_below)
+            self.S0_idx = n_below
+
+            # Adjust S_min to be >= 0
+            if S_min < 0:
+                S_min = 0.0
+                self.S_grid = np.linspace(S_min, S_max, M)
+                # Find closest grid point to S0
+                self.S0_idx = np.argmin(np.abs(self.S_grid - S0))
+                # Rebuild grid to center exactly on S0
+                self.dS = S_max / (M - 1)
+                # Create grid with S0 at specific index
+                idx_target = max(1, M // 3)  # Put S0 at about 1/3 from left
+                S_min_new = S0 - idx_target * self.dS
+                if S_min_new < 0:
+                    S_min_new = 0.0
+                    self.dS = (S_max - 0.0) / (M - 1)
+                    self.S_grid = np.linspace(0.0, S_max, M)
+                    # Find where S0 would be
+                    self.S0_idx = int(round(S0 / self.dS))
+                    # Adjust grid to make S0 exact
+                    self.S_grid[self.S0_idx] = S0
+                else:
+                    S_max_new = S0 + (M - 1 - idx_target) * self.dS
+                    self.S_grid = np.linspace(S_min_new, S_max_new, M)
+                    self.S0_idx = idx_target
+                    # Ensure S0 is exact
+                    self.S_grid[self.S0_idx] = S0
         else:
+            # Original fixed grid
+            # Adaptive S_max that scales with volatility (fixes high-vol pricing error)
+            S_min = 0.0
+            S_max = max(3.0 * K, S0 * np.exp((r + 3*sigma) * T))
+            self.S_grid = np.linspace(S_min, S_max, M)
+            self.dS = self.S_grid[1] - self.S_grid[0]
             self.S0_idx = None
 
     def _compute_spline_second_derivatives(self, V: List[ADVar], S_grid: np.ndarray) -> List[ADVar]:
@@ -239,27 +280,24 @@ class BS_PDE_AAD_Rannacher:
             Tuple of (a_L, b_L, c_L, a_R, b_R, c_R) coefficient lists
         """
         n = self.M - 2
-        dx = self.dx
-        dx_sq = ADVar(dx**2, requires_grad=False)
-        dx_2 = ADVar(2.0 * dx, requires_grad=False)
+        dS = self.dS
+        dS_sq = ADVar(dS**2, requires_grad=False)
+        dS_2 = ADVar(2.0 * dS, requires_grad=False)
 
         a_L, b_L, c_L = [], [], []
         a_R, b_R, c_R = [], [], []
 
-        # Log-space PDE coefficients (constant!)
-        alpha = (sigma_var * sigma_var / ADVar(2.0)) / dx_sq
-        beta = (ADVar(self.r) - sigma_var * sigma_var / ADVar(2.0)) / dx_2
-        gamma = -ADVar(self.r)
-
-        l = alpha - beta
-        c = -ADVar(2.0) * alpha + gamma
-        u = alpha + beta
-
         for i in range(n):
-            # Same coefficients for all grid points
-            l_i = l
-            c_i = c
-            u_i = u
+            S_i = self.S_grid[i+1]
+            S_i_var = ADVar(S_i, requires_grad=False)
+
+            alpha_i = (sigma_var * sigma_var * S_i_var * S_i_var / ADVar(2.0)) / dS_sq
+            beta_i = ADVar(self.r) * S_i_var / dS_2
+            gamma_i = -ADVar(self.r)
+
+            l_i = alpha_i - beta_i
+            c_i = -ADVar(2.0) * alpha_i + gamma_i
+            u_i = alpha_i + beta_i
 
             # Use phi parameter instead of self.phi
             phi_var = ADVar(phi)
@@ -373,7 +411,7 @@ class BS_PDE_AAD_Rannacher:
         if verbose:
             dt_vals = np.diff(t_grid)
             print(f"  Grid: M={self.M}, N={N}")
-            print(f"  dt={dt_vals[0]:.6f}, dx={self.dx:.4f} (log-space)")
+            print(f"  dt={dt_vals[0]:.6f}, dS={self.dS:.4f}")
             if self.use_rannacher:
                 print(f"  Rannacher: R={self.rannacher_steps} steps (φ=1.0), then φ=0.5")
 

@@ -22,12 +22,30 @@ class BS_PDE_AAD:
         self.N_base = N_base
         self.phi = 0.5
 
-        # Adaptive S_max that scales with volatility (fixes high-vol pricing error)
-        S_min = 0.0
-        S_max = max(3.0 * K, S0 * np.exp((r + 3*sigma) * T))
-        self.S_grid = np.linspace(S_min, S_max, M)
-        self.dS = self.S_grid[1] - self.S_grid[0]
+        # Adaptive S_max that scales with volatility
+        # Expanded from 3σ to 5σ to capture full option tail at high volatility
+        S_max = max(5.0 * K, S0 * np.exp((r + 5*sigma) * T))
+
+        # Log-scale grid: x = log(S)
+        # Transforms PDE to constant diffusion coefficient 0.5*σ²
+        S_min = 1e-3
+        x_min = np.log(S_min)
+        x_max = np.log(S_max)
+
+        # Uniform grid in log-space
+        self.x_grid = np.linspace(x_min, x_max, M)
+        self.dx = self.x_grid[1] - self.x_grid[0]
+
+        # Convert to S-space
+        self.S_grid = np.exp(self.x_grid)
         self.S0_idx = None
+
+        
+        self.N = N_base
+        self.dt = T / self.N
+        alpha = (sigma**2 / 2.0) / (self.dx**2)
+        dt_critical = (self.dx**2) / (2.0 * alpha)
+        self.cfl_ratio = self.dt / dt_critical
 
 
     def _compute_spline_second_derivatives(self, V: List[ADVar], S_grid: np.ndarray) -> List[ADVar]:
@@ -134,24 +152,27 @@ class BS_PDE_AAD:
 
     def build_tridiagonal_cn(self, sigma_var: ADVar, dt: ADVar):
         n = self.M - 2
-        dS = self.dS
-        dS_sq = ADVar(dS**2, requires_grad=False)
-        dS_2 = ADVar(2.0 * dS, requires_grad=False)
+        dx = self.dx
+        dx_sq = ADVar(dx**2, requires_grad=False)
+        dx_2 = ADVar(2.0 * dx, requires_grad=False)
 
         a_L, b_L, c_L = [], [], []
         a_R, b_R, c_R = [], [], []
 
+        # Log-space PDE coefficients (constant for all grid points!)
+        alpha = (sigma_var * sigma_var / ADVar(2.0)) / dx_sq  # Diffusion
+        beta = (ADVar(self.r) - sigma_var * sigma_var / ADVar(2.0)) / dx_2  # Drift
+        gamma = -ADVar(self.r)  # Discount
+
+        l = alpha - beta  # Lower diagonal
+        c = -ADVar(2.0) * alpha + gamma  # Main diagonal
+        u = alpha + beta  # Upper diagonal
+
         for i in range(n):
-            S_i = self.S_grid[i+1]
-            S_i_var = ADVar(S_i, requires_grad=False)
-
-            alpha_i = (sigma_var * sigma_var * S_i_var * S_i_var / ADVar(2.0)) / dS_sq
-            beta_i = ADVar(self.r) * S_i_var / dS_2
-            gamma_i = -ADVar(self.r)
-
-            l_i = alpha_i - beta_i
-            c_i = -ADVar(2.0) * alpha_i + gamma_i
-            u_i = alpha_i + beta_i
+            # Same coefficients for all grid points
+            l_i = l
+            c_i = c
+            u_i = u
 
             phi = self.phi
 
@@ -232,8 +253,6 @@ class BS_PDE_AAD:
             sigma_val: Volatility
             compute_hessian: Whether to compute Hessian (Gamma, Vanna, Volga)
             verbose: Print diagnostic information
-            fixed_grid: If True, use fixed N (eliminates dN/dσ in derivatives)
-                       If False, use adaptive timesteps (default legacy behavior)
         """
         from aad_edge_pushing.edge_pushing.algo4_adjlist import algo4_adjlist
 
@@ -245,14 +264,15 @@ class BS_PDE_AAD:
         sigma_var = ADVar(sigma_val, requires_grad=True, name="sigma")
         self.S0 = S0_val
 
-        N = self.N_base
+        # Use adaptive N (self.N) instead of fixed N_base
+        N = self.N
         dt_val = self.T / N
         t_grid = np.linspace(0, self.T, N + 1)
 
         if verbose:
             dt_vals = np.diff(t_grid)
             print(f"  Grid: M={self.M}, N={N}")
-            print(f"  dt={dt_vals[0]:.6f}, dS={self.dS:.4f}")
+            print(f"  dt={dt_vals[0]:.6f}, dx={self.dx:.4f} (log-space)")
 
         dt_val = t_grid[1] - t_grid[0]
         dt = ADVar(dt_val, requires_grad=False)

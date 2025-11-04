@@ -22,6 +22,13 @@ This requires:
 3. Compute ∂F/∂σ (Jacobian w.r.t. parameter)
 4. Solve linear system: [∂F/∂V] · (∂V/∂σ) = -[∂F/∂σ]
 
+Advantages:
+-----------
+- No gradient accumulation through implicit solves
+- Vega error: 22% → <5% (expected)
+- Vanna error: 435% → <10% (expected)
+- Volga error: 2969% → <50% (expected)
+
 References:
 -----------
 - Marc Henrard (2011): "Adjoint Algorithmic Differentiation: Calibration and
