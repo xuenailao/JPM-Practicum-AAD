@@ -20,6 +20,10 @@ wheels/
 .installed.cfg
 *.egg
 
+# Cython
+*.c
+*.html
+
 # Jupyter Notebook
 .ipynb_checkpoints
 *.ipynb
@@ -45,3 +49,5 @@ htmlcov/
 
 # Benchmark results
 benchmark_results/
+
+sync_config.jsonc
