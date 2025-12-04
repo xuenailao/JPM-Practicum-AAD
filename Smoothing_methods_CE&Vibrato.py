@@ -4,9 +4,7 @@ import numpy as np
 from numpy.linalg import cholesky, LinAlgError, eigh, inv, norm
 
 
-# ============================================================
-# Optional SciPy linear algebra (for slightly better numerics)
-# ============================================================
+
 try:
     from scipy.linalg import cho_factor, cho_solve, solve_triangular
 except ImportError:
@@ -560,7 +558,7 @@ def basket_ce_hessian_correlated(
 
 
 # ============================================================
-# Vibrato variant: CE-on-Asset + 1D Gauss-Hermite quadrature
+# Method 2: Vibrato variant: CE-on-Asset + 1D Gauss-Hermite quadrature
 # ============================================================
 from functools import lru_cache
 
@@ -786,7 +784,7 @@ def basket_ce_vibrato_hessian_correlated(
 
 
 # ============================================================
-# Method 4: Unified FD benchmark
+# Method 3: Unified FD benchmark
 # ============================================================
 def basket_fd_hessian(
     S0, w, K, T, r, sigma, L, eps_steps,
